@@ -5,10 +5,29 @@ import { useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import { Order } from '@/lib/types';
 import { createClient } from '@/lib/supabase/client';
-import { fmt, fmtDate, norm, findCol, shortStatus, tagClass, parseDate } from '@/lib/utils';
-import { Upload, Download, ChevronLeft, ChevronRight, Search } from 'lucide-react';
+import { fmt, fmtDate, norm, findCol, shortStatus, tagClass, parseDate, inRange } from '@/lib/utils';
+import { useResizableCols, ResizeHandle, ColDef } from '@/lib/useResizableCols';
+import { Upload, Download, ChevronLeft, ChevronRight, Search, RotateCcw } from 'lucide-react';
 
 const PAGE_SIZE = 50;
+
+// Cấu hình cột mặc định cho bảng đơn hàng
+const DEFAULT_COLS: ColDef[] = [
+  { key: 'date',       width: 120, minWidth: 90 },
+  { key: 'platform',   width: 80,  minWidth: 60 },
+  { key: 'orderId',    width: 140, minWidth: 100 },
+  { key: 'carrier',    width: 110, minWidth: 70 },
+  { key: 'package',    width: 150, minWidth: 80 },
+  { key: 'status',     width: 105, minWidth: 70 },
+  { key: 'product',    width: 280, minWidth: 120 },
+  { key: 'sku',        width: 95,  minWidth: 60 },
+  { key: 'price',      width: 100, minWidth: 80 },
+  { key: 'fee',        width: 95,  minWidth: 80 },
+  { key: 'revenue',    width: 105, minWidth: 80 },
+  { key: 'cogs',       width: 100, minWidth: 80 },
+  { key: 'profit',     width: 105, minWidth: 80 },
+  { key: 'invoice',    width: 65,  minWidth: 50 },
+];
 
 type Props = {
   initialOrders: Order[];
@@ -22,11 +41,18 @@ export default function OrdersClient({ initialOrders, products }: Props) {
   const [platform, setPlatform] = useState('all');
   const [status, setStatus] = useState('all');
   const [invFilter, setInvFilter] = useState('all');
+  const [dateRange, setDateRange] = useState('all');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [importing, setImporting] = useState(false);
   const [alert, setAlert] = useState<{ type: string; text: string } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Resize cols (lưu vào localStorage)
+  const { cols, setWidth, reset } = useResizableCols('orders-col-widths', DEFAULT_COLS);
+  const colW = (k: string) => cols.find(c => c.key === k)?.width || 100;
 
   // Map SKU -> giá vốn để lookup nhanh
   const costMap = useMemo(() => {
@@ -48,11 +74,14 @@ export default function OrdersClient({ initialOrders, products }: Props) {
     if (status !== 'all') list = list.filter(o => shortStatus(o.status || '').text === status);
     if (invFilter === 'yes') list = list.filter(o => o.invoice_issued);
     else if (invFilter === 'no') list = list.filter(o => !o.invoice_issued);
+    if (dateRange !== 'all') {
+      list = list.filter(o => inRange(o.date_order, dateRange, dateFrom, dateTo));
+    }
     if (q) list = list.filter(o =>
       norm(o.order_id).includes(q) || norm(o.product_name).includes(q) || norm(o.sku).includes(q)
     );
     return list;
-  }, [orders, platform, status, invFilter, search]);
+  }, [orders, platform, status, invFilter, dateRange, dateFrom, dateTo, search]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageRows = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -237,6 +266,26 @@ export default function OrdersClient({ initialOrders, products }: Props) {
         <button className="btn btn-primary" disabled={importing} onClick={() => fileRef.current?.click()}>
           <Upload size={15} /> {importing ? 'Đang import...' : 'Import file đơn hàng'}
         </button>
+
+        <select className="input" value={dateRange} onChange={e => { setDateRange(e.target.value); setPage(1); }}>
+          <option value="all">Tất cả thời gian</option>
+          <option value="today">Hôm nay</option>
+          <option value="7days">7 ngày qua</option>
+          <option value="30days">30 ngày qua</option>
+          <option value="month">Tháng này</option>
+          <option value="year">Năm này</option>
+          <option value="custom">Tùy chọn ngày...</option>
+        </select>
+        {dateRange === 'custom' && (
+          <>
+            <input type="date" className="input" value={dateFrom}
+              onChange={e => { setDateFrom(e.target.value); setPage(1); }} />
+            <span className="text-gray-400 text-sm">đến</span>
+            <input type="date" className="input" value={dateTo}
+              onChange={e => { setDateTo(e.target.value); setPage(1); }} />
+          </>
+        )}
+
         <select className="input" value={platform} onChange={e => { setPlatform(e.target.value); setPage(1); }}>
           <option value="all">Tất cả sàn</option>
           <option value="shopee">Shopee</option>
@@ -253,11 +302,14 @@ export default function OrdersClient({ initialOrders, products }: Props) {
         </select>
         <div className="relative">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-          <input className="input pl-8 w-64" placeholder="Tìm mã đơn, SP, SKU..." value={search}
+          <input className="input pl-8 w-56" placeholder="Tìm mã đơn, SP, SKU..." value={search}
             onChange={e => { setSearch(e.target.value); setPage(1); }} />
         </div>
         <button className="btn btn-secondary btn-sm" onClick={handleExport}>
           <Download size={14} /> Xuất Excel
+        </button>
+        <button className="btn btn-secondary btn-sm" onClick={reset} title="Reset độ rộng các cột về mặc định">
+          <RotateCcw size={13} /> Reset cột
         </button>
       </div>
 
@@ -270,37 +322,24 @@ export default function OrdersClient({ initialOrders, products }: Props) {
       )}
 
       <div className="card !p-0 overflow-x-auto">
-        <table className="tbl orders-tbl">
+        <table className="tbl orders-tbl" style={{ width: cols.reduce((s, c) => s + c.width, 0) }}>
           <colgroup>
-            <col style={{ width: 120 }} />{/* Ngày đặt */}
-            <col style={{ width: 75 }} />{/* Sàn */}
-            <col style={{ width: 135 }} />{/* Mã đơn */}
-            <col style={{ width: 105 }} />{/* ĐVVC */}
-            <col style={{ width: 145 }} />{/* Mã kiện */}
-            <col style={{ width: 100 }} />{/* Trạng thái */}
-            <col />{/* Sản phẩm - linh hoạt */}
-            <col style={{ width: 90 }} />{/* SKU */}
-            <col style={{ width: 95 }} />{/* Giá bán */}
-            <col style={{ width: 95 }} />{/* Tổng phí */}
-            <col style={{ width: 100 }} />{/* Doanh thu */}
-            <col style={{ width: 95 }} />{/* Giá vốn HB */}
-            <col style={{ width: 100 }} />{/* Lợi nhuận */}
-            <col style={{ width: 65 }} />{/* HĐ */}
+            {cols.map(c => <col key={c.key} style={{ width: c.width }} />)}
           </colgroup>
           <thead><tr>
-            <th>Ngày đặt</th>
-            <th>Sàn</th>
-            <th>Mã đơn</th>
-            <th>ĐVVC</th>
-            <th>Mã kiện</th>
-            <th>Trạng thái</th>
-            <th>Sản phẩm</th>
-            <th>SKU</th>
-            <th className="text-right">Giá bán</th>
-            <th className="text-right">Tổng phí</th>
-            <th className="text-right">Doanh thu</th>
-            <th className="text-right">Giá vốn HB</th>
-            <th className="text-right">Lợi nhuận</th>
+            <th>Ngày đặt<ResizeHandle currentWidth={colW('date')} onResize={w => setWidth('date', w)} /></th>
+            <th>Sàn<ResizeHandle currentWidth={colW('platform')} onResize={w => setWidth('platform', w)} /></th>
+            <th>Mã đơn<ResizeHandle currentWidth={colW('orderId')} onResize={w => setWidth('orderId', w)} /></th>
+            <th>ĐVVC<ResizeHandle currentWidth={colW('carrier')} onResize={w => setWidth('carrier', w)} /></th>
+            <th>Mã kiện<ResizeHandle currentWidth={colW('package')} onResize={w => setWidth('package', w)} /></th>
+            <th>Trạng thái<ResizeHandle currentWidth={colW('status')} onResize={w => setWidth('status', w)} /></th>
+            <th>Sản phẩm<ResizeHandle currentWidth={colW('product')} onResize={w => setWidth('product', w)} /></th>
+            <th>SKU<ResizeHandle currentWidth={colW('sku')} onResize={w => setWidth('sku', w)} /></th>
+            <th className="text-right">Giá bán<ResizeHandle currentWidth={colW('price')} onResize={w => setWidth('price', w)} /></th>
+            <th className="text-right">Tổng phí<ResizeHandle currentWidth={colW('fee')} onResize={w => setWidth('fee', w)} /></th>
+            <th className="text-right">Doanh thu<ResizeHandle currentWidth={colW('revenue')} onResize={w => setWidth('revenue', w)} /></th>
+            <th className="text-right">Giá vốn HB<ResizeHandle currentWidth={colW('cogs')} onResize={w => setWidth('cogs', w)} /></th>
+            <th className="text-right">Lợi nhuận<ResizeHandle currentWidth={colW('profit')} onResize={w => setWidth('profit', w)} /></th>
             <th>HĐ</th>
           </tr></thead>
           <tbody>
@@ -311,21 +350,16 @@ export default function OrdersClient({ initialOrders, products }: Props) {
             )}
             {pageRows.map(o => {
               const st = shortStatus(o.status || '');
-              // Giá bán = Giá ưu đãi - Mã giảm giá Shop
               const price = (o.price_deal || 0) - (o.shop_voucher || 0);
-              // Tổng phí
               const totalFee = (o.fee_fix || 0) + (o.fee_service || 0) + (o.fee_payment || 0);
-              // Doanh thu = Giá bán - Tổng phí
               const revenue = price - totalFee;
-              // Giá vốn HB = giá vốn SKU × số lượng
               const cogs = (costMap.get(o.sku || '') || 0) * (o.quantity || 1);
-              // Lợi nhuận = Doanh thu - Giá vốn HB
               const profit = revenue - cogs;
               return (
                 <tr key={o.unique_key}>
-                  <td className="text-xs whitespace-nowrap">{fmtDate(o.date_order)}</td>
+                  <td className="text-xs">{fmtDate(o.date_order)}</td>
                   <td><span className={`tag ${tagClass(o.platform)}`}>{o.platform === 'shopee' ? 'Shopee' : 'TikTok'}</span></td>
-                  <td className="font-medium whitespace-nowrap text-xs">{o.order_id}</td>
+                  <td className="font-medium text-xs">{o.order_id}</td>
                   <td className="text-xs">{o.carrier || '-'}</td>
                   <td className="text-xs">{o.package_id || '-'}</td>
                   <td><span className={`tag ${tagClass(st.color)}`}>{st.text}</span></td>
