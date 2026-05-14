@@ -200,8 +200,9 @@ export default function OrdersClient({ initialOrders, products }: Props) {
     const rows = filtered.map(o => {
       const price = (o.price_deal || 0) - (o.shop_voucher || 0);
       const totalFee = (o.fee_fix || 0) + (o.fee_service || 0) + (o.fee_payment || 0);
+      const revenue = price - totalFee;
       const cogs = (costMap.get(o.sku || '') || 0) * (o.quantity || 1);
-      const profit = price * (o.quantity || 1) - totalFee - cogs;
+      const profit = revenue - cogs;
       return {
         'Ngày đặt': o.date_order,
         'Sàn': o.platform,
@@ -214,6 +215,7 @@ export default function OrdersClient({ initialOrders, products }: Props) {
         'Số lượng': o.quantity,
         'Giá bán': price,
         'Tổng phí': totalFee,
+        'Doanh thu': revenue,
         'Giá vốn HB': cogs,
         'Lợi nhuận': profit,
         'Đã xuất HĐ': o.invoice_issued ? 'Có' : 'Không',
@@ -269,24 +271,41 @@ export default function OrdersClient({ initialOrders, products }: Props) {
 
       <div className="card !p-0 overflow-x-auto">
         <table className="tbl orders-tbl">
+          <colgroup>
+            <col style={{ width: 120 }} />{/* Ngày đặt */}
+            <col style={{ width: 75 }} />{/* Sàn */}
+            <col style={{ width: 135 }} />{/* Mã đơn */}
+            <col style={{ width: 105 }} />{/* ĐVVC */}
+            <col style={{ width: 145 }} />{/* Mã kiện */}
+            <col style={{ width: 100 }} />{/* Trạng thái */}
+            <col />{/* Sản phẩm - linh hoạt */}
+            <col style={{ width: 90 }} />{/* SKU */}
+            <col style={{ width: 95 }} />{/* Giá bán */}
+            <col style={{ width: 95 }} />{/* Tổng phí */}
+            <col style={{ width: 100 }} />{/* Doanh thu */}
+            <col style={{ width: 95 }} />{/* Giá vốn HB */}
+            <col style={{ width: 100 }} />{/* Lợi nhuận */}
+            <col style={{ width: 65 }} />{/* HĐ */}
+          </colgroup>
           <thead><tr>
-            <th style={{ width: 130 }}>Ngày đặt</th>
-            <th style={{ width: 80 }}>Sàn</th>
-            <th style={{ width: 140 }}>Mã đơn</th>
-            <th style={{ width: 120 }}>ĐVVC</th>
-            <th style={{ width: 110 }}>Mã kiện</th>
-            <th style={{ width: 110 }}>Trạng thái</th>
-            <th style={{ minWidth: 260 }}>Sản phẩm</th>
-            <th style={{ width: 100 }}>SKU</th>
-            <th style={{ width: 110 }} className="text-right">Giá bán</th>
-            <th style={{ width: 100 }} className="text-right">Tổng phí</th>
-            <th style={{ width: 110 }} className="text-right">Giá vốn HB</th>
-            <th style={{ width: 110 }} className="text-right">Lợi nhuận</th>
-            <th style={{ width: 70 }}>HĐ</th>
+            <th>Ngày đặt</th>
+            <th>Sàn</th>
+            <th>Mã đơn</th>
+            <th>ĐVVC</th>
+            <th>Mã kiện</th>
+            <th>Trạng thái</th>
+            <th>Sản phẩm</th>
+            <th>SKU</th>
+            <th className="text-right">Giá bán</th>
+            <th className="text-right">Tổng phí</th>
+            <th className="text-right">Doanh thu</th>
+            <th className="text-right">Giá vốn HB</th>
+            <th className="text-right">Lợi nhuận</th>
+            <th>HĐ</th>
           </tr></thead>
           <tbody>
             {pageRows.length === 0 && (
-              <tr><td colSpan={13} className="text-center text-gray-400 py-12">
+              <tr><td colSpan={14} className="text-center text-gray-400 py-12">
                 {orders.length === 0 ? 'Chưa có đơn hàng — hãy import file Shopee' : 'Không có đơn khớp bộ lọc'}
               </td></tr>
             )}
@@ -296,25 +315,28 @@ export default function OrdersClient({ initialOrders, products }: Props) {
               const price = (o.price_deal || 0) - (o.shop_voucher || 0);
               // Tổng phí
               const totalFee = (o.fee_fix || 0) + (o.fee_service || 0) + (o.fee_payment || 0);
+              // Doanh thu = Giá bán - Tổng phí
+              const revenue = price - totalFee;
               // Giá vốn HB = giá vốn SKU × số lượng
               const cogs = (costMap.get(o.sku || '') || 0) * (o.quantity || 1);
-              // Lợi nhuận = Giá bán × SL - Tổng phí - Giá vốn HB
-              const profit = price * (o.quantity || 1) - totalFee - cogs;
+              // Lợi nhuận = Doanh thu - Giá vốn HB
+              const profit = revenue - cogs;
               return (
                 <tr key={o.unique_key}>
                   <td className="text-xs whitespace-nowrap">{fmtDate(o.date_order)}</td>
                   <td><span className={`tag ${tagClass(o.platform)}`}>{o.platform === 'shopee' ? 'Shopee' : 'TikTok'}</span></td>
-                  <td className="font-medium whitespace-nowrap">{o.order_id}</td>
+                  <td className="font-medium whitespace-nowrap text-xs">{o.order_id}</td>
                   <td className="text-xs">{o.carrier || '-'}</td>
                   <td className="text-xs">{o.package_id || '-'}</td>
                   <td><span className={`tag ${tagClass(st.color)}`}>{st.text}</span></td>
                   <td>
-                    <div className="truncate" title={o.product_name} style={{ maxWidth: 260 }}>{o.product_name || '-'}</div>
+                    <div className="truncate" title={o.product_name}>{o.product_name || '-'}</div>
                     {o.quantity && o.quantity > 1 && <span className="text-xs text-gray-400">×{o.quantity}</span>}
                   </td>
                   <td className="text-xs">{o.sku || '-'}</td>
                   <td className="text-right">{fmt(price)}</td>
                   <td className="text-right text-yellow-600">{fmt(totalFee)}</td>
+                  <td className="text-right">{fmt(revenue)}</td>
                   <td className="text-right">{cogs > 0 ? fmt(cogs) : <span className="text-gray-300">—</span>}</td>
                   <td className={`text-right font-medium ${profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                     {cogs > 0 ? fmt(profit) : <span className="text-gray-300">—</span>}
