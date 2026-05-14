@@ -75,6 +75,63 @@
 }
 .tbl tr:hover td { background: #fafbfc; }
 
+/* Orders table - giữ độ rộng cột chính xác */
+.orders-tbl {
+  table-layout: fixed;
+  width: 100%;
+}
+/* th: KHÔNG overflow hidden để handle hiển thị, td mới hidden */
+.orders-tbl th {
+  position: relative;
+  overflow: visible;
+  white-space: nowrap;
+}
+.orders-tbl td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.orders-tbl td > div.truncate {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Resize handle ở edge phải mỗi th */
+.col-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -6px;
+  width: 12px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 50;
+  user-select: none;
+  background: transparent;
+  touch-action: none;
+}
+.col-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1px;
+  height: 100%;
+  background: #e5e7eb;
+  transition: all 0.15s;
+  pointer-events: none;
+}
+.col-resize-handle:hover::after {
+  background: #ee4d2d;
+  width: 3px;
+}
+.col-resize-handle:active::after {
+  background: #ee4d2d;
+  width: 3px;
+}
+
 .fade-in { animation: fade 0.2s ease; }
 @keyframes fade {
   from { opacity: 0; transform: translateY(4px); }
