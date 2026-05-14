@@ -79,6 +79,7 @@
 .orders-tbl {
   table-layout: fixed;
   width: 100%;
+  border-right: 1px solid #e5e7eb;
 }
 /* th: KHÔNG overflow hidden để handle hiển thị, td mới hidden */
 .orders-tbl th {
@@ -96,6 +97,15 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* Cell chứa tag (Sàn, Trạng thái, HĐ) - không cắt text vì tag tự ngắt */
+.orders-tbl td:has(> .tag) {
+  overflow: visible;
+}
+/* Đảm bảo viền phải cell cuối cùng đầy đủ */
+.orders-tbl th:last-child,
+.orders-tbl td:last-child {
+  padding-right: 14px;
 }
 
 /* Resize handle ở edge phải mỗi th */
@@ -130,6 +140,89 @@
 .col-resize-handle:active::after {
   background: #ee4d2d;
   width: 3px;
+}
+
+/* Filter button trong header */
+.filter-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  color: #9ca3af;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: all 0.15s;
+  padding: 0;
+}
+.filter-btn:hover {
+  background: #f3f4f6;
+  color: #4b5563;
+}
+.filter-btn.active {
+  color: #ee4d2d;
+  background: #fff5f2;
+}
+
+/* Filter popup */
+.filter-popup {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.05);
+  padding: 12px;
+  z-index: 100;
+  min-width: 240px;
+  max-width: 320px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #1f2937;
+}
+.filter-popup .input-sm {
+  padding: 5px 8px;
+  font-size: 12px;
+}
+.filter-list {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid #f3f4f6;
+  border-radius: 4px;
+  margin-bottom: 8px;
+}
+.filter-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.filter-item:hover { background: #f9fafb; }
+.filter-item input[type="checkbox"] {
+  accent-color: #ee4d2d;
+  flex-shrink: 0;
+}
+.filter-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.filter-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+  border-top: 1px solid #f3f4f6;
+  padding-top: 10px;
 }
 
 .fade-in { animation: fade 0.2s ease; }
