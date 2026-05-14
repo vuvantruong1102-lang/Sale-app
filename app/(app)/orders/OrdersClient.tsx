@@ -62,9 +62,13 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
   const [page, setPage] = useState(1);
   const [importing, setImporting] = useState(false);
   const [importingRecon, setImportingRecon] = useState(false);
+  const [importingTiktok, setImportingTiktok] = useState(false);
+  const [importingTiktokRecon, setImportingTiktokRecon] = useState(false);
   const [alert, setAlert] = useState<{ type: string; text: string } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const reconFileRef = useRef<HTMLInputElement>(null);
+  const tiktokFileRef = useRef<HTMLInputElement>(null);
+  const tiktokReconFileRef = useRef<HTMLInputElement>(null);
 
   // Resize cols
   const { cols, setWidth, reset } = useResizableCols('orders-col-widths', DEFAULT_COLS);
@@ -431,6 +435,202 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
     }
   };
 
+  // ============ IMPORT FILE TIKTOK ORDER ============
+  const handleImportTiktok = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setImportingTiktok(true);
+    setAlert(null);
+
+    let added = 0, updated = 0, total = 0;
+    const allRows: Order[] = [];
+
+    try {
+      // Map trạng thái TikTok sang chuẩn nội bộ (giống định dạng Shopee tiếng Việt)
+      const mapStatus = (s: string): string => {
+        const n = norm(s);
+        if (n.includes('hủy') || n.includes('cancel')) return 'Đã hủy';
+        if (n.includes('hoàn thành') || n.includes('completed')) return 'Hoàn thành';
+        if (n.includes('đã giao') || n.includes('delivered')) return 'Đã giao';
+        if (n.includes('đã vận chuyển') || n.includes('shipped') || n.includes('in transit')) return 'Đang giao';
+        if (n.includes('cần vận chuyển') || n.includes('chờ vận chuyển') || n.includes('to ship') || n.includes('awaiting shipment')) return 'Chờ giao';
+        if (n.includes('chờ lấy hàng') || n.includes('awaiting collection')) return 'Chờ lấy hàng';
+        return s; // giữ nguyên nếu không khớp
+      };
+
+      for (const f of files) {
+        const data = await f.arrayBuffer();
+        const wb = XLSX.read(data, { type: 'array', cellDates: true });
+        const sh = wb.Sheets[wb.SheetNames[0]];
+        const rows: any[][] = XLSX.utils.sheet_to_json(sh, { header: 1, defval: null, raw: false });
+        if (rows.length < 3) continue;
+
+        // Row 0 = header, Row 1 = mô tả (skip), Row 2+ = data
+        const headers = (rows[0] || []).map((h: any) => String(h ?? '').trim());
+        const idx = (key: string) => headers.findIndex(h => norm(h) === norm(key));
+
+        const c_orderId    = idx('Order ID');                       // A
+        const c_status     = idx('Order Status');                   // B
+        const c_sku        = idx('Seller SKU');                     // G
+        const c_skuId      = idx('SKU ID');                         // F
+        const c_name       = idx('Product Name');                   // H
+        const c_variation  = idx('Variation');                      // I
+        const c_qty        = idx('Quantity');                       // J
+        const c_subtotal   = idx('SKU Subtotal Before Discount');   // M
+        const c_sellerDisc = idx('SKU Seller Discount');            // O
+        const c_paidAmount = idx('Order Amount');                   // W (= tổng người mua trả)
+        const c_dateOrder  = idx('Created Time');                   // Y
+        const c_datePaid   = idx('Paid Time');                      // Z
+        const c_dateShip   = idx('Shipped Time');                   // AB
+        const c_dateDelivered = idx('Delivered Time');              // AC
+        const c_packageId  = idx('Package ID');                     // AY
+        const c_tracking   = idx('Tracking ID');                    // AI
+        const c_carrier    = idx('Shipping Provider Name');         // AK
+
+        if (c_orderId === -1) {
+          setAlert({ type: 'error', text: `File "${f.name}" không có cột "Order ID"` });
+          continue;
+        }
+
+        const toIso = (v: any): string | null => {
+          if (!v) return null;
+          // TikTok format: "14/05/2026 16:15:00" hoặc Date object
+          if (v instanceof Date) return v.toISOString();
+          const s = String(v).trim();
+          // Thử parse dd/MM/yyyy HH:mm:ss
+          const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{1,2}):(\d{1,2})$/);
+          if (m) {
+            const [, d, mo, y, h, mi, se] = m;
+            const dt = new Date(+y, +mo - 1, +d, +h, +mi, +se);
+            return dt.toISOString();
+          }
+          const d = parseDate(v);
+          return d ? d.toISOString() : null;
+        };
+
+        // Bắt đầu từ row 2 (skip header + description row)
+        for (let i = 2; i < rows.length; i++) {
+          const r = rows[i] || [];
+          const id = String(r[c_orderId] ?? '').trim();
+          if (!id) continue;
+          const skuVar = String((c_sku >= 0 && r[c_sku]) ?? '').trim() || 'NOSKU';
+          const unique_key = id + '__' + skuVar;
+
+          const qty = c_qty >= 0 ? +(r[c_qty] || 1) : 1;
+          const subtotal = c_subtotal >= 0 ? +(r[c_subtotal] || 0) : 0;
+          const sellerDisc = c_sellerDisc >= 0 ? +(r[c_sellerDisc] || 0) : 0;
+          // Giá trị ĐH = cột M - cột O
+          const orderValueTT = subtotal - sellerDisc;
+          // Giá bán = giá trị ĐH / SL (lưu vào price_deal)
+          const pricePerUnit = qty > 0 ? orderValueTT / qty : 0;
+
+          allRows.push({
+            unique_key,
+            order_id: id,
+            platform: 'tiktok' as any,
+            package_id: c_packageId >= 0 ? String(r[c_packageId] ?? '') : '',
+            tracking_no: c_tracking >= 0 ? String(r[c_tracking] ?? '') : '',
+            status: c_status >= 0 ? mapStatus(String(r[c_status] ?? '').trim()) : '',
+            carrier: c_carrier >= 0 ? String(r[c_carrier] ?? '') : '',
+            sku: skuVar,
+            sku_parent: c_skuId >= 0 ? String(r[c_skuId] ?? '') : '',
+            product_name: c_name >= 0 ? String(r[c_name] ?? '') : '',
+            variation: c_variation >= 0 ? String(r[c_variation] ?? '') : '',
+            price_original: 0,
+            // Lưu giá bán = giá trị ĐH / SL (vì code tính price * qty - shop_voucher; ta để shop_voucher = 0)
+            price_deal: pricePerUnit,
+            quantity: qty,
+            total_paid: c_paidAmount >= 0 ? +(r[c_paidAmount] || 0) : 0,
+            total_order_value: orderValueTT,
+            shop_voucher: 0,    // đã trừ trong pricePerUnit rồi
+            fee_fix: 0,         // map từ file tài chính sau
+            fee_service: 0,
+            fee_payment: 0,
+            date_order: c_dateOrder >= 0 ? toIso(r[c_dateOrder]) : null,
+            date_ship: c_dateShip >= 0 ? toIso(r[c_dateShip]) : null,
+            date_complete: c_dateDelivered >= 0 ? toIso(r[c_dateDelivered]) : null,
+          });
+          total++;
+        }
+      }
+
+      if (allRows.length === 0) {
+        setAlert({ type: 'error', text: 'Không có dữ liệu hợp lệ trong file TikTok' });
+        return;
+      }
+
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Chưa đăng nhập');
+
+      // Dedupe phí cho đơn nhiều SKU (giống Shopee). TikTok có thể có 1 đơn nhiều SKU = nhiều row.
+      const byOrderId = new Map<string, Order[]>();
+      allRows.forEach(r => {
+        const arr = byOrderId.get(r.order_id) || [];
+        arr.push(r);
+        byOrderId.set(r.order_id, arr);
+      });
+
+      // Đếm số đơn mới vs cập nhật
+      const existingKeys = new Set(orders.map(o => o.unique_key));
+      allRows.forEach(r => {
+        if (existingKeys.has(r.unique_key)) updated++; else added++;
+      });
+
+      const BATCH = 500;
+      const payload = allRows.map(r => ({ ...r, user_id: user.id }));
+      for (let i = 0; i < payload.length; i += BATCH) {
+        const slice = payload.slice(i, i + BATCH);
+        const { error } = await supabase
+          .from('orders')
+          .upsert(slice, { onConflict: 'user_id,unique_key', ignoreDuplicates: false });
+        if (error) throw error;
+      }
+
+      // Tự sync SKU mới vào products
+      const skuMap = new Map<string, { sku: string; name: string; variation: string }>();
+      allRows.forEach(r => {
+        if (!r.sku || r.sku === 'NOSKU') return;
+        if (!skuMap.has(r.sku)) {
+          skuMap.set(r.sku, { sku: r.sku, name: r.product_name || '', variation: r.variation || '' });
+        }
+      });
+      const { data: existingProds } = await supabase.from('products').select('sku');
+      const existingSkus = new Set((existingProds || []).map(p => p.sku));
+      const newProducts = Array.from(skuMap.values())
+        .filter(p => !existingSkus.has(p.sku))
+        .map(p => ({ ...p, user_id: user.id, stock_initial: 0, cost: 0, price: 0, unit: 'cái' }));
+      if (newProducts.length) {
+        await supabase.from('products').upsert(newProducts, { onConflict: 'user_id,sku', ignoreDuplicates: true });
+      }
+
+      setAlert({
+        type: 'success',
+        text: `✓ Đã import ${total} dòng TikTok — ${added} đơn mới, ${updated} đơn cập nhật${
+          newProducts.length ? `, ${newProducts.length} SKU mới đồng bộ vào kho` : ''
+        }`
+      });
+
+      const { data: fresh } = await supabase
+        .from('orders').select('*').order('date_order', { ascending: false }).limit(20000);
+      setOrders(fresh || []);
+      router.refresh();
+    } catch (err: any) {
+      setAlert({ type: 'error', text: 'Lỗi: ' + (err.message || err) });
+    } finally {
+      setImportingTiktok(false);
+      if (tiktokFileRef.current) tiktokFileRef.current.value = '';
+    }
+  };
+
+  // ============ IMPORT VÍ TIKTOK (sẽ implement khi có file mẫu) ============
+  const handleImportTiktokRecon = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    e.target.value = '';
+    setAlert({
+      type: 'error',
+      text: 'Chức năng "Import Ví TikTok" chưa được cấu hình — vui lòng gửi file tài chính TikTok mẫu để map các cột',
+    });
+  };
+
   // ============ IMPORT (giữ nguyên + dedupe) ============
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
@@ -617,7 +817,7 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       'Tổng phí': r.totalFee,
       'Phí TTLK': r.feeTTLK,
       'Doanh thu': r.revenue,
-      'Shopee thanh toán': r.shopeePayout ?? '',
+      'Sàn thanh toán': r.shopeePayout ?? '',
       'Chênh lệch': r.diff ?? '',
       'Giá vốn HB': r.cogs,
       'Lợi nhuận': r.profit ?? '',
@@ -637,7 +837,7 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       <div className="flex flex-wrap gap-3 mb-4 items-center">
         <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" multiple className="hidden" onChange={handleImport} />
         <button className="btn btn-primary" disabled={importing} onClick={() => fileRef.current?.click()}>
-          <Upload size={15} /> {importing ? 'Đang import...' : 'Import file đơn hàng'}
+          <Upload size={15} /> {importing ? 'Đang import...' : 'Import Shopee Order'}
         </button>
 
         <input ref={reconFileRef} type="file" accept=".xlsx,.xls,.csv" multiple className="hidden" onChange={handleImportRecon} />
@@ -646,9 +846,31 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
           style={{ background: '#10b981', color: 'white' }}
           disabled={importingRecon}
           onClick={() => reconFileRef.current?.click()}
-          title="Import file 'Báo cáo giao dịch' (Transaction Report) từ Shopee để đối soát số tiền thực nhận"
+          title="Import Transaction Report từ Shopee Ví để đối soát"
         >
-          <Upload size={15} /> {importingRecon ? 'Đang import...' : 'Import file đối soát'}
+          <Upload size={15} /> {importingRecon ? 'Đang import...' : 'Import Ví Shopee'}
+        </button>
+
+        <input ref={tiktokFileRef} type="file" accept=".xlsx,.xls,.csv" multiple className="hidden" onChange={handleImportTiktok} />
+        <button
+          className="btn"
+          style={{ background: '#111827', color: 'white' }}
+          disabled={importingTiktok}
+          onClick={() => tiktokFileRef.current?.click()}
+          title="Import file đơn hàng TikTokShop"
+        >
+          <Upload size={15} /> {importingTiktok ? 'Đang import...' : 'Import TiktokShop Order'}
+        </button>
+
+        <input ref={tiktokReconFileRef} type="file" accept=".xlsx,.xls,.csv" multiple className="hidden" onChange={handleImportTiktokRecon} />
+        <button
+          className="btn"
+          style={{ background: '#374151', color: 'white' }}
+          disabled={importingTiktokRecon}
+          onClick={() => tiktokReconFileRef.current?.click()}
+          title="Import file đối soát tài chính TikTokShop (cần thiết bản về sau)"
+        >
+          <Upload size={15} /> {importingTiktokRecon ? 'Đang import...' : 'Import Ví Tiktokshop'}
         </button>
 
         <select className="input" value={dateRange} onChange={e => { setDateRange(e.target.value); setPage(1); }}>
@@ -739,7 +961,7 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
             <ColHeader label="Doanh thu" colKey="revenue" width={colW('revenue')} onResize={w => setWidth('revenue', w)} align="right"
               filterable filterType="number"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
-            <ColHeader label="Shopee TT" colKey="shopeePayout" width={colW('shopeePayout')} onResize={w => setWidth('shopeePayout', w)} align="right"
+            <ColHeader label="Sàn TT" colKey="shopeePayout" width={colW('shopeePayout')} onResize={w => setWidth('shopeePayout', w)} align="right"
               filterable filterType="number"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
             <ColHeader label="Chênh lệch" colKey="diff" width={colW('diff')} onResize={w => setWidth('diff', w)} align="right"
