@@ -58,26 +58,26 @@ export function ResizeHandle({
   onResize: (newWidth: number) => void;
   currentWidth: number;
 }) {
-  const startX = useRef(0);
-  const startW = useRef(0);
-  const dragging = useRef(false);
+  // Dùng ref để giữ giá trị current width tại thời điểm bắt đầu kéo
+  // tránh stale closure khi state cập nhật
+  const widthRef = useRef(currentWidth);
+  widthRef.current = currentWidth;
 
   const onMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    startX.current = e.clientX;
-    startW.current = currentWidth;
-    dragging.current = true;
+    const startX = e.clientX;
+    const startW = widthRef.current;
+
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
 
     const onMove = (ev: MouseEvent) => {
-      if (!dragging.current) return;
-      const delta = ev.clientX - startX.current;
-      onResize(startW.current + delta);
+      ev.preventDefault();
+      const delta = ev.clientX - startX;
+      onResize(startW + delta);
     };
     const onUp = () => {
-      dragging.current = false;
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       document.removeEventListener('mousemove', onMove);
@@ -92,7 +92,8 @@ export function ResizeHandle({
       onMouseDown={onMouseDown}
       onClick={e => e.stopPropagation()}
       className="col-resize-handle"
-      title="Kéo để chỉnh độ rộng cột"
+      role="separator"
+      aria-label="Kéo để chỉnh độ rộng cột"
     />
   );
 }
