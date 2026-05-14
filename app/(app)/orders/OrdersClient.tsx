@@ -27,6 +27,8 @@ const DEFAULT_COLS: ColDef[] = [
   { key: 'price',      width: 100, minWidth: 80 },
   { key: 'fee',        width: 95,  minWidth: 80 },
   { key: 'revenue',    width: 105, minWidth: 80 },
+  { key: 'shopeePayout', width: 120, minWidth: 90 },
+  { key: 'diff',       width: 100, minWidth: 80 },
   { key: 'cogs',       width: 100, minWidth: 80 },
   { key: 'profit',     width: 105, minWidth: 80 },
   { key: 'invoice',    width: 80,  minWidth: 60 },
@@ -42,20 +44,24 @@ type ColFilter =
 type Props = {
   initialOrders: Order[];
   products: { sku: string; cost: number }[];
+  reconciliation: { order_id: string; shopee_payout: number }[];
 };
 
-export default function OrdersClient({ initialOrders, products }: Props) {
+export default function OrdersClient({ initialOrders, products, reconciliation: initialRecon }: Props) {
   const router = useRouter();
   const supabase = createClient();
   const [orders, setOrders] = useState<Order[]>(initialOrders);
+  const [reconciliation, setReconciliation] = useState(initialRecon);
   const [dateRange, setDateRange] = useState('all');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [importing, setImporting] = useState(false);
+  const [importingRecon, setImportingRecon] = useState(false);
   const [alert, setAlert] = useState<{ type: string; text: string } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const reconFileRef = useRef<HTMLInputElement>(null);
 
   // Resize cols
   const { cols, setWidth, reset } = useResizableCols('orders-col-widths', DEFAULT_COLS);
@@ -72,16 +78,55 @@ export default function OrdersClient({ initialOrders, products }: Props) {
     return m;
   }, [products]);
 
+  // Map order_id -> Shopee thanh toán
+  const payoutMap = useMemo(() => {
+    const m = new Map<string, number>();
+    reconciliation.forEach(r => m.set(r.order_id, r.shopee_payout || 0));
+    return m;
+  }, [reconciliation]);
+
   // Tính giá trị derived của mỗi row 1 lần để dùng cho filter + display
-  const rowsWithCalc = useMemo(() => orders.map(o => {
-    const price = (o.price_deal || 0) - (o.shop_voucher || 0);
-    const totalFee = (o.fee_fix || 0) + (o.fee_service || 0) + (o.fee_payment || 0);
-    const revenue = price - totalFee;
-    const cogs = (costMap.get(o.sku || '') || 0) * (o.quantity || 1);
-    const profit = revenue - cogs;
-    const st = shortStatus(o.status || '');
-    return { o, price, totalFee, revenue, cogs, profit, statusText: st.text, statusColor: st.color };
-  }), [orders, costMap]);
+  // shopeePayout chỉ hiển thị ở 1 dòng (dòng chính) của mỗi đơn để tránh nhân đôi
+  const rowsWithCalc = useMemo(() => {
+    // Tìm dòng chính của mỗi đơn (dòng có total_paid cao nhất)
+    const mainRowKey = new Map<string, string>(); // order_id -> unique_key dòng chính
+    const grouped = new Map<string, Order[]>();
+    orders.forEach(o => {
+      const arr = grouped.get(o.order_id) || [];
+      arr.push(o);
+      grouped.set(o.order_id, arr);
+    });
+    grouped.forEach((lines, oid) => {
+      if (lines.length === 1) {
+        mainRowKey.set(oid, lines[0].unique_key);
+        return;
+      }
+      let main = lines[0];
+      for (const l of lines) {
+        if ((l.total_paid || 0) > (main.total_paid || 0)) main = l;
+      }
+      mainRowKey.set(oid, main.unique_key);
+    });
+
+    return orders.map(o => {
+      const price = (o.price_deal || 0) - (o.shop_voucher || 0);
+      const totalFee = (o.fee_fix || 0) + (o.fee_service || 0) + (o.fee_payment || 0);
+      const revenue = price - totalFee;
+      const cogs = (costMap.get(o.sku || '') || 0) * (o.quantity || 1);
+      const profit = revenue - cogs;
+      const st = shortStatus(o.status || '');
+      // Shopee thanh toán chỉ hiển thị ở dòng chính, payoutMap.has = có dữ liệu đối soát
+      const isMainRow = mainRowKey.get(o.order_id) === o.unique_key;
+      const hasPayout = payoutMap.has(o.order_id);
+      const shopeePayout = isMainRow && hasPayout ? (payoutMap.get(o.order_id) || 0) : null;
+      const diff = shopeePayout !== null ? shopeePayout - revenue : null;
+      return {
+        o, price, totalFee, revenue, cogs, profit,
+        statusText: st.text, statusColor: st.color,
+        shopeePayout, diff, isMainRow, hasPayout,
+      };
+    });
+  }, [orders, costMap, payoutMap]);
 
   // Tập value duy nhất cho từng cột list-type (dùng cho dropdown checkbox)
   const uniqueValues = useMemo(() => ({
@@ -129,6 +174,8 @@ export default function OrdersClient({ initialOrders, products }: Props) {
       if (!matchNum('price', r.price)) return false;
       if (!matchNum('fee', r.totalFee)) return false;
       if (!matchNum('revenue', r.revenue)) return false;
+      if (!matchNum('shopeePayout', r.shopeePayout ?? 0)) return false;
+      if (!matchNum('diff', r.diff ?? 0)) return false;
       if (!matchNum('cogs', r.cogs)) return false;
       if (!matchNum('profit', r.profit)) return false;
 
@@ -176,6 +223,112 @@ export default function OrdersClient({ initialOrders, products }: Props) {
   const clearAllFilters = () => {
     setColFilters({});
     setPage(1);
+  };
+
+  // ============ IMPORT FILE ĐỐI SOÁT SHOPEE ============
+  const handleImportRecon = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setImportingRecon(true);
+    setAlert(null);
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Chưa đăng nhập');
+
+      // Map order_id -> { payout: tổng cộng, count: số GD, lastDate }
+      const payouts = new Map<string, { payout: number; count: number; lastDate: Date | null }>();
+
+      for (const f of files) {
+        const data = await f.arrayBuffer();
+        const wb = XLSX.read(data, { type: 'array', cellDates: true });
+        const sh = wb.Sheets[wb.SheetNames[0]];
+        // File có metadata phía trên - tìm hàng header thật
+        // Header có cột "Mã đơn hàng" - thường ở row 17 (index 17 = hàng 18)
+        // Strategy: thử các skiprows phổ biến, tìm dòng chứa "Mã đơn hàng"
+        const allRows: any[][] = XLSX.utils.sheet_to_json(sh, { header: 1, defval: null, raw: false });
+        let headerRowIdx = -1;
+        for (let i = 0; i < Math.min(30, allRows.length); i++) {
+          const row = allRows[i] || [];
+          if (row.some(c => norm(c) === norm('Mã đơn hàng'))) {
+            headerRowIdx = i;
+            break;
+          }
+        }
+        if (headerRowIdx === -1) {
+          setAlert({ type: 'error', text: `File "${f.name}" không tìm thấy cột "Mã đơn hàng"` });
+          continue;
+        }
+        const headers = (allRows[headerRowIdx] || []).map((h: any) => String(h ?? '').trim());
+        const c_orderIdx = headers.findIndex(h => norm(h) === norm('Mã đơn hàng'));
+        const c_amountIdx = headers.findIndex(h => norm(h) === norm('Số tiền'));
+        const c_dateIdx = headers.findIndex(h => norm(h) === norm('Ngày'));
+
+        if (c_orderIdx === -1 || c_amountIdx === -1) {
+          setAlert({ type: 'error', text: `File "${f.name}" thiếu cột Mã đơn hàng hoặc Số tiền` });
+          continue;
+        }
+
+        // Parse các dòng giao dịch
+        for (let i = headerRowIdx + 1; i < allRows.length; i++) {
+          const row = allRows[i] || [];
+          const orderId = String(row[c_orderIdx] ?? '').trim();
+          if (!orderId || orderId === '-') continue; // bỏ qua dòng không có mã đơn
+
+          const amount = +(row[c_amountIdx] || 0);
+          if (isNaN(amount)) continue;
+
+          const dateVal = c_dateIdx >= 0 ? parseDate(row[c_dateIdx]) : null;
+
+          const cur = payouts.get(orderId) || { payout: 0, count: 0, lastDate: null as Date | null };
+          cur.payout += amount;
+          cur.count += 1;
+          if (dateVal && (!cur.lastDate || dateVal > cur.lastDate)) {
+            cur.lastDate = dateVal;
+          }
+          payouts.set(orderId, cur);
+        }
+      }
+
+      if (payouts.size === 0) {
+        setAlert({ type: 'error', text: 'Không có giao dịch hợp lệ trong file' });
+        return;
+      }
+
+      // Build payload upsert vào Supabase
+      const payload = Array.from(payouts.entries()).map(([orderId, data]) => ({
+        user_id: user.id,
+        order_id: orderId,
+        shopee_payout: data.payout,
+        transaction_count: data.count,
+        last_transaction_date: data.lastDate?.toISOString() || null,
+      }));
+
+      const BATCH = 500;
+      for (let i = 0; i < payload.length; i += BATCH) {
+        const slice = payload.slice(i, i + BATCH);
+        const { error } = await supabase
+          .from('reconciliation')
+          .upsert(slice, { onConflict: 'user_id,order_id', ignoreDuplicates: false });
+        if (error) throw error;
+      }
+
+      setAlert({
+        type: 'success',
+        text: `✓ Đã import đối soát ${payouts.size} đơn hàng từ file Shopee`,
+      });
+
+      // Reload reconciliation
+      const { data: fresh } = await supabase
+        .from('reconciliation').select('order_id,shopee_payout');
+      setReconciliation(fresh || []);
+      router.refresh();
+    } catch (err: any) {
+      setAlert({ type: 'error', text: 'Lỗi: ' + (err.message || err) });
+    } finally {
+      setImportingRecon(false);
+      if (reconFileRef.current) reconFileRef.current.value = '';
+    }
   };
 
   // ============ IMPORT (giữ nguyên + dedupe) ============
@@ -364,6 +517,8 @@ export default function OrdersClient({ initialOrders, products }: Props) {
       'Giá bán': r.price,
       'Tổng phí': r.totalFee,
       'Doanh thu': r.revenue,
+      'Shopee thanh toán': r.shopeePayout ?? '',
+      'Chênh lệch': r.diff ?? '',
       'Giá vốn HB': r.cogs,
       'Lợi nhuận': r.profit,
       'Đã xuất HĐ': r.o.invoice_issued ? 'Có' : 'Không',
@@ -383,6 +538,17 @@ export default function OrdersClient({ initialOrders, products }: Props) {
         <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" multiple className="hidden" onChange={handleImport} />
         <button className="btn btn-primary" disabled={importing} onClick={() => fileRef.current?.click()}>
           <Upload size={15} /> {importing ? 'Đang import...' : 'Import file đơn hàng'}
+        </button>
+
+        <input ref={reconFileRef} type="file" accept=".xlsx,.xls,.csv" multiple className="hidden" onChange={handleImportRecon} />
+        <button
+          className="btn"
+          style={{ background: '#10b981', color: 'white' }}
+          disabled={importingRecon}
+          onClick={() => reconFileRef.current?.click()}
+          title="Import file 'Báo cáo giao dịch' (Transaction Report) từ Shopee để đối soát số tiền thực nhận"
+        >
+          <Upload size={15} /> {importingRecon ? 'Đang import...' : 'Import file đối soát'}
         </button>
 
         <select className="input" value={dateRange} onChange={e => { setDateRange(e.target.value); setPage(1); }}>
@@ -468,6 +634,12 @@ export default function OrdersClient({ initialOrders, products }: Props) {
             <ColHeader label="Doanh thu" colKey="revenue" width={colW('revenue')} onResize={w => setWidth('revenue', w)} align="right"
               filterable filterType="number"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Shopee TT" colKey="shopeePayout" width={colW('shopeePayout')} onResize={w => setWidth('shopeePayout', w)} align="right"
+              filterable filterType="number"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Chênh lệch" colKey="diff" width={colW('diff')} onResize={w => setWidth('diff', w)} align="right"
+              filterable filterType="number"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
             <ColHeader label="Giá vốn HB" colKey="cogs" width={colW('cogs')} onResize={w => setWidth('cogs', w)} align="right"
               filterable filterType="number"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
@@ -480,7 +652,7 @@ export default function OrdersClient({ initialOrders, products }: Props) {
           </tr></thead>
           <tbody>
             {pageRows.length === 0 && (
-              <tr><td colSpan={14} className="text-center text-gray-400 py-12">
+              <tr><td colSpan={16} className="text-center text-gray-400 py-12">
                 {orders.length === 0 ? 'Chưa có đơn hàng — hãy import file Shopee' : 'Không có đơn khớp bộ lọc'}
               </td></tr>
             )}
@@ -502,6 +674,22 @@ export default function OrdersClient({ initialOrders, products }: Props) {
                   <td className="text-right">{fmt(r.price)}</td>
                   <td className="text-right text-yellow-600">{fmt(r.totalFee)}</td>
                   <td className="text-right">{fmt(r.revenue)}</td>
+                  <td className="text-right">
+                    {r.shopeePayout !== null
+                      ? <span className="text-blue-600 font-medium">{fmt(r.shopeePayout)}</span>
+                      : <span className="text-gray-300">—</span>}
+                  </td>
+                  <td className="text-right">
+                    {r.diff !== null ? (
+                      <span className={`font-medium ${
+                        Math.abs(r.diff) < 1 ? 'text-gray-500'
+                          : r.diff > 0 ? 'text-green-600'
+                          : 'text-red-600'
+                      }`}>
+                        {r.diff > 0 ? '+' : ''}{fmt(r.diff)}
+                      </span>
+                    ) : <span className="text-gray-300">—</span>}
+                  </td>
                   <td className="text-right">{r.cogs > 0 ? fmt(r.cogs) : <span className="text-gray-300">—</span>}</td>
                   <td className={`text-right font-medium ${r.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                     {r.cogs > 0 ? fmt(r.profit) : <span className="text-gray-300">—</span>}
