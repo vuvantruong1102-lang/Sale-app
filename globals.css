@@ -94,6 +94,38 @@
   text-overflow: ellipsis;
 }
 
+/* Resize handle ở edge phải mỗi th */
+.orders-tbl th {
+  position: relative;
+}
+.col-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 10;
+  user-select: none;
+}
+.col-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 25%;
+  right: 3px;
+  width: 1px;
+  height: 50%;
+  background: #d1d5db;
+  transition: all 0.15s;
+}
+.col-resize-handle:hover::after,
+.col-resize-handle:active::after {
+  background: #ee4d2d;
+  width: 2px;
+  top: 0;
+  height: 100%;
+}
+
 .fade-in { animation: fade 0.2s ease; }
 @keyframes fade {
   from { opacity: 0; transform: translateY(4px); }
