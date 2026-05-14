@@ -188,7 +188,7 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
             warnings.push('HĐ chưa phát hành');
           } else if (rs.includes('hủy')) {
             warnings.push('HĐ đã hủy');
-          } else if (!rs.includes('đã phát hành') && rs !== '') {
+          } else if (!rs.includes('đã phát hành') && !rs.includes('đã cấp mã') && rs !== '') {
             warnings.push(`TT phát hành bất thường: ${releaseStatusText}`);
           }
         }
@@ -335,6 +335,10 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         return;
       }
 
+      // Debug: kiểm tra cột invoice_export_value có giá trị thật không
+      const withExport = payload.filter(p => p.invoice_export_value > 0).length;
+      const withStatus = payload.filter(p => p.export_status).length;
+
       const BATCH = 500;
       for (let i = 0; i < payload.length; i += BATCH) {
         const slice = payload.slice(i, i + BATCH);
@@ -344,7 +348,10 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         if (error) throw error;
       }
 
-      setAlert({ type: 'success', text: `✓ Đã import ${payload.length} đơn xuất HĐ từ MISA` });
+      setAlert({
+        type: 'success',
+        text: `✓ Đã import ${payload.length} đơn xuất HĐ từ MISA • Có ${withExport} đơn có Giá trị xuất HĐ • ${withStatus} đơn có Trạng thái xuất HĐ`,
+      });
 
       const { data: fresh } = await supabase.from('misa_orders').select('*');
       setMisa(fresh || []);
@@ -429,6 +436,8 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         return;
       }
 
+      const withRelease = payload.filter(p => p.release_status).length;
+
       const BATCH = 500;
       for (let i = 0; i < payload.length; i += BATCH) {
         const slice = payload.slice(i, i + BATCH);
@@ -438,7 +447,10 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         if (error) throw error;
       }
 
-      setAlert({ type: 'success', text: `✓ Đã import ${payload.length} trạng thái HĐ` });
+      setAlert({
+        type: 'success',
+        text: `✓ Đã import ${payload.length} trạng thái HĐ • ${withRelease} đơn có TT phát hành HĐ`,
+      });
 
       const { data: fresh } = await supabase.from('invoice_status').select('*');
       setInvStatus(fresh || []);
@@ -624,7 +636,7 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
                   <td>
                     {r.releaseStatusText
                       ? <span className={`tag ${
-                          norm(r.releaseStatusText).includes('đã phát hành')
+                          norm(r.releaseStatusText).includes('đã phát hành') || norm(r.releaseStatusText).includes('đã cấp mã')
                             ? 'bg-green-100 text-green-700'
                             : norm(r.releaseStatusText).includes('hủy')
                             ? 'bg-red-100 text-red-700'
