@@ -103,7 +103,7 @@ export function shortStatus(s: string): { text: string; color: string } {
   if (n.includes('chờ giao')) return { text: 'Chờ giao', color: 'yellow' };
   if (n.includes('người mua xác nhận')) return { text: 'Đã nhận', color: 'green' };
   if (n.includes('đã giao')) return { text: 'Đã giao', color: 'green' };
-  if (n.includes('hoàn thành') || n.includes('complete')) return { text: 'Hoàn thành', color: 'green' };
+  if (n.includes('hoàn thành') || n.includes('hoàn tất') || n.includes('complete')) return { text: 'Hoàn thành', color: 'green' };
   return { text: s || '-', color: 'gray' };
 }
 
