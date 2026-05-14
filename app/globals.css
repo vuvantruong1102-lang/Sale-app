@@ -142,6 +142,18 @@
   width: 3px;
 }
 
+/* Hàng tổng cộng - sticky dưới header */
+.totals-row {
+  background: #f9fafb;
+  border-top: 2px solid #d1d5db;
+  border-bottom: 2px solid #d1d5db;
+}
+.totals-row td {
+  font-weight: 600;
+  background: #f9fafb;
+  padding: 10px 12px;
+}
+
 /* Filter button trong header */
 .filter-btn {
   display: inline-flex;
