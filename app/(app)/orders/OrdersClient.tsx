@@ -7,6 +7,7 @@ import { Order } from '@/lib/types';
 import { createClient } from '@/lib/supabase/client';
 import { fmt, fmtDate, norm, findCol, shortStatus, tagClass, parseDate, inRange } from '@/lib/utils';
 import { useResizableCols, ResizeHandle, ColDef } from '@/lib/useResizableCols';
+import { fetchAll } from '@/lib/fetchAll';
 import {
   Upload, Download, ChevronLeft, ChevronRight, Search, RotateCcw,
   Filter, X, Check
@@ -240,18 +241,6 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         const m = String(d.getMonth() + 1).padStart(2, '0');
         const day = String(d.getDate()).padStart(2, '0');
         const ymd = `${y}-${m}-${day}`;
-        // DEBUG: log 1 sample đầu tiên để biết format
-        if (typeof window !== 'undefined' && !(window as any).__dateFilterDebugged) {
-          (window as any).__dateFilterDebugged = true;
-          console.log('[DateFilter Debug]', {
-            input_dateStr: dateStr,
-            parsed_date: d.toString(),
-            computed_ymd: ymd,
-            filter_from: f.from,
-            filter_to: f.to,
-            comparison: f.from ? `"${ymd}" >= "${f.from}"? ${ymd >= f.from}` : 'no from',
-          });
-        }
         if (f.from && ymd < f.from) return false;
         if (f.to && ymd > f.to) return false;
         return true;
@@ -443,9 +432,8 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       });
 
       // Reload reconciliation
-      const { data: fresh } = await supabase
-        .from('reconciliation').select('order_id,shopee_payout,has_adjustment');
-      setReconciliation(fresh || []);
+      const fresh = await fetchAll(supabase as any, 'reconciliation', { orderBy: null });
+      setReconciliation(fresh);
       router.refresh();
     } catch (err: any) {
       setAlert({ type: 'error', text: 'Lỗi: ' + (err.message || err) });
@@ -639,9 +627,8 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         }`
       });
 
-      const { data: fresh } = await supabase
-        .from('orders').select('*').order('date_order', { ascending: false }).limit(20000);
-      setOrders(fresh || []);
+      const fresh = await fetchAll(supabase as any, 'orders', { orderBy: 'date_order', ascending: false });
+      setOrders(fresh);
       router.refresh();
     } catch (err: any) {
       setAlert({ type: 'error', text: 'Lỗi: ' + (err.message || err) });
@@ -822,12 +809,12 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       });
 
       // Reload data
-      const [{ data: freshOrders }, { data: freshRecon }] = await Promise.all([
-        supabase.from('orders').select('*').order('date_order', { ascending: false }).limit(20000),
-        supabase.from('reconciliation').select('order_id,shopee_payout,has_adjustment'),
+      const [freshOrders, freshRecon] = await Promise.all([
+        fetchAll(supabase as any, 'orders', { orderBy: 'date_order', ascending: false }),
+        fetchAll(supabase as any, 'reconciliation', { orderBy: null }),
       ]);
-      setOrders(freshOrders || []);
-      setReconciliation(freshRecon || []);
+      setOrders(freshOrders);
+      setReconciliation(freshRecon);
       router.refresh();
     } catch (err: any) {
       setAlert({ type: 'error', text: 'Lỗi: ' + (err.message || err) });
@@ -1017,9 +1004,8 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         }${dedupedCount ? ` • Đã chống lặp phí cho ${dedupedCount} dòng phụ` : ''}`
       });
 
-      const { data: fresh } = await supabase
-        .from('orders').select('*').order('date_order', { ascending: false }).limit(20000);
-      setOrders(fresh || []);
+      const fresh = await fetchAll(supabase as any, 'orders', { orderBy: 'date_order', ascending: false });
+      setOrders(fresh);
       router.refresh();
     } catch (err: any) {
       setAlert({ type: 'error', text: 'Lỗi: ' + (err.message || err) });

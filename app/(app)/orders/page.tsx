@@ -1,18 +1,19 @@
 import { createClient } from '@/lib/supabase/server';
+import { fetchAll } from '@/lib/fetchAll';
 import OrdersClient from './OrdersClient';
 
 export default async function OrdersPage() {
   const supabase = createClient();
-  const [{ data: orders }, { data: products }, { data: reconciliation }] = await Promise.all([
-    supabase.from('orders').select('*').order('date_order', { ascending: false }).limit(20000),
+  const [orders, productsRes, reconRes] = await Promise.all([
+    fetchAll(supabase as any, 'orders', { orderBy: 'date_order', ascending: false }),
     supabase.from('products').select('sku,cost'),
-    supabase.from('reconciliation').select('order_id,shopee_payout,has_adjustment'),
+    fetchAll(supabase as any, 'reconciliation', { orderBy: null }),
   ]);
   return (
     <OrdersClient
-      initialOrders={orders || []}
-      products={products || []}
-      reconciliation={reconciliation || []}
+      initialOrders={orders}
+      products={productsRes.data || []}
+      reconciliation={reconRes as any}
     />
   );
 }
