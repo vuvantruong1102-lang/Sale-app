@@ -1,7 +1,7 @@
-// Định dạng tiền VND
+// Định dạng tiền VND (không có ký hiệu đ)
 export const fmt = (n: number | null | undefined): string => {
-  if (!n || isNaN(Number(n))) return '0₫';
-  return new Intl.NumberFormat('vi-VN').format(Math.round(Number(n))) + '₫';
+  if (!n || isNaN(Number(n))) return '0';
+  return new Intl.NumberFormat('vi-VN').format(Math.round(Number(n)));
 };
 
 export const fmtN = (n: number | null | undefined): string => {
