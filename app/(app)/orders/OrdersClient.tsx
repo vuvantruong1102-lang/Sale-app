@@ -228,15 +228,19 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         if (f.max !== undefined && val > f.max) return false;
         return true;
       };
-      // Helper: kiểm tra date filter (so sánh date-only, không tính giờ)
+      // Helper: kiểm tra date filter (so sánh date-only theo local timezone, không tính giờ)
       const matchDate = (key: string, dateStr: string | null | undefined) => {
         const f = cf[key];
         if (!f || f.type !== 'date') return true;
         if (!dateStr) return false; // không có ngày = không match
-        // Convert dateStr (ISO) sang YYYY-MM-DD để so sánh
         const d = new Date(dateStr);
         if (isNaN(d.getTime())) return false;
-        const ymd = d.toISOString().slice(0, 10);
+        // Convert sang YYYY-MM-DD theo LOCAL timezone (không phải UTC)
+        // Vì các ô <input type="date"> trả về YYYY-MM-DD theo local
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        const ymd = `${y}-${m}-${day}`;
         if (f.from && ymd < f.from) return false;
         if (f.to && ymd > f.to) return false;
         return true;
@@ -246,6 +250,7 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       if (!matchList('platform', o.platform === 'shopee' ? 'Shopee' : 'TikTok')) return false;
       if (!matchList('status', r.statusText)) return false;
       if (!matchList('sku', o.sku || '(trống)')) return false;
+      if (!matchList('returnStatus', r.isReturned ? 'THHT' : 'Bình thường')) return false;
       if (!matchNum('quantity', r.quantity)) return false;
       if (!matchNum('price', r.price)) return false;
       if (!matchNum('orderValue', r.orderValue)) return false;
@@ -565,6 +570,15 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
 
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Chưa đăng nhập');
+
+      // FIX: Dedupe unique_key (tránh lỗi ON CONFLICT khi có nhiều dòng cùng order+SKU rỗng)
+      const seenKeys = new Map<string, number>();
+      allRows.forEach(r => {
+        const baseKey = r.unique_key;
+        const count = seenKeys.get(baseKey) || 0;
+        seenKeys.set(baseKey, count + 1);
+        if (count > 0) r.unique_key = `${baseKey}_${count + 1}`;
+      });
 
       // Dedupe phí cho đơn nhiều SKU (giống Shopee). TikTok có thể có 1 đơn nhiều SKU = nhiều row.
       const byOrderId = new Map<string, Order[]>();
@@ -901,6 +915,23 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       if (!user) throw new Error('Không xác thực được người dùng');
 
       // ============================================================
+      // FIX: Đảm bảo unique_key không bị trùng trong allRows.
+      // File Shopee đôi khi có đơn 2 SKU mà cả 2 đều SKU rỗng (NOSKU + NOSKU)
+      // → unique_key trùng nhau → Postgres ném lỗi "ON CONFLICT DO UPDATE cannot affect row a second time"
+      // → thêm suffix _2, _3... cho các dòng trùng key
+      // ============================================================
+      const seenKeys = new Map<string, number>();
+      allRows.forEach(r => {
+        const baseKey = r.unique_key;
+        const count = seenKeys.get(baseKey) || 0;
+        seenKeys.set(baseKey, count + 1);
+        if (count > 0) {
+          // Đây là dòng thứ 2+ với cùng key → thêm suffix
+          r.unique_key = `${baseKey}_${count + 1}`;
+        }
+      });
+
+      // ============================================================
       // DEDUPE phí cho đơn nhiều dòng (Shopee lặp phí ở mỗi dòng)
       // Chỉ giữ phí ở dòng có total_paid cao nhất
       // ============================================================
@@ -1159,7 +1190,9 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
             <ColHeader label="Lợi nhuận" colKey="profit" width={colW('profit')} onResize={w => setWidth('profit', w)} align="right"
               filterable filterType="number"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
-            <ColHeader label="TT THHT" colKey="returnStatus" width={colW('returnStatus')} noResize />
+            <ColHeader label="TT THHT" colKey="returnStatus" width={colW('returnStatus')} noResize
+              filterable filterType="list" filterValues={['THHT', 'Bình thường']}
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
           </tr></thead>
           <tbody>
             {/* HÀNG TỔNG CỘNG - hiển thị tổng theo bộ lọc hiện tại */}
@@ -1448,7 +1481,14 @@ function FilterPopup({ type, values, current, onApply, onClose }: FilterPopupPro
 
   // ===== DATE FILTER (from/to date) =====
   if (type === 'date') {
-    const today = new Date().toISOString().slice(0, 10);
+    // Helper: format Date sang YYYY-MM-DD theo LOCAL timezone (không phải UTC)
+    const toLocalYMD = (d: Date) => {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
+    const today = toLocalYMD(new Date());
     const [from, setFrom] = useState<string>(
       current?.type === 'date' && current.from ? current.from : ''
     );
@@ -1458,15 +1498,15 @@ function FilterPopup({ type, values, current, onApply, onClose }: FilterPopupPro
     // Quick presets
     const setRange = (days: number) => {
       const d = new Date();
-      const toStr = d.toISOString().slice(0, 10);
+      const toStr = toLocalYMD(d);
       d.setDate(d.getDate() - days + 1);
-      const fromStr = d.toISOString().slice(0, 10);
+      const fromStr = toLocalYMD(d);
       setFrom(fromStr);
       setTo(toStr);
     };
     const setMonth = () => {
       const d = new Date();
-      const fromStr = new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
+      const fromStr = toLocalYMD(new Date(d.getFullYear(), d.getMonth(), 1));
       setFrom(fromStr);
       setTo(today);
     };
