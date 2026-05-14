@@ -6,7 +6,7 @@ export default async function OrdersPage() {
   const [{ data: orders }, { data: products }, { data: reconciliation }] = await Promise.all([
     supabase.from('orders').select('*').order('date_order', { ascending: false }).limit(20000),
     supabase.from('products').select('sku,cost'),
-    supabase.from('reconciliation').select('order_id,shopee_payout'),
+    supabase.from('reconciliation').select('order_id,shopee_payout,has_adjustment'),
   ]);
   return (
     <OrdersClient

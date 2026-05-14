@@ -26,11 +26,13 @@ const DEFAULT_COLS: ColDef[] = [
   { key: 'price',        width: 100, minWidth: 80 },
   { key: 'orderValue',   width: 110, minWidth: 80 },
   { key: 'fee',          width: 95,  minWidth: 80 },
+  { key: 'feeTTLK',      width: 100, minWidth: 80 },
   { key: 'revenue',      width: 105, minWidth: 80 },
   { key: 'shopeePayout', width: 120, minWidth: 90 },
   { key: 'diff',         width: 100, minWidth: 80 },
   { key: 'cogs',         width: 100, minWidth: 80 },
   { key: 'profit',       width: 105, minWidth: 80 },
+  { key: 'returnStatus', width: 90,  minWidth: 70 },
 ];
 
 // Type cho mỗi col filter
@@ -43,7 +45,7 @@ type ColFilter =
 type Props = {
   initialOrders: Order[];
   products: { sku: string; cost: number }[];
-  reconciliation: { order_id: string; shopee_payout: number }[];
+  reconciliation: { order_id: string; shopee_payout: number; has_adjustment?: boolean }[];
 };
 
 export default function OrdersClient({ initialOrders, products, reconciliation: initialRecon }: Props) {
@@ -84,6 +86,13 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
     return m;
   }, [reconciliation]);
 
+  // Map order_id -> có giao dịch điều chỉnh ('Cấn trừ Số dư TK Shopee' / 'Điều chỉnh')
+  const adjustmentMap = useMemo(() => {
+    const m = new Map<string, boolean>();
+    reconciliation.forEach(r => m.set(r.order_id, !!r.has_adjustment));
+    return m;
+  }, [reconciliation]);
+
   // Tính giá trị derived của mỗi row 1 lần để dùng cho filter + display
   // shopeePayout chỉ hiển thị ở 1 dòng (dòng chính) của mỗi đơn để tránh nhân đôi
   const rowsWithCalc = useMemo(() => {
@@ -114,37 +123,75 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       const totalFee = (o.fee_fix || 0) + (o.fee_service || 0) + (o.fee_payment || 0);
       const st = shortStatus(o.status || '');
 
-      // Shopee TT chỉ hiển thị ở dòng chính, payoutMap.has = có dữ liệu đối soát
+      // Shopee TT chỉ hiển thị ở dòng chính
       const isMainRow = mainRowKey.get(o.order_id) === o.unique_key;
       const hasPayout = payoutMap.has(o.order_id);
-      const shopeePayout = isMainRow && hasPayout ? (payoutMap.get(o.order_id) || 0) : null;
+      const payoutValue = payoutMap.get(o.order_id) || 0;
+      const shopeePayout = isMainRow && hasPayout ? payoutValue : null;
 
       const isCancelled = st.text === 'Đã hủy';
+      const isCompleted = st.text === 'Hoàn thành' || st.text === 'Đã nhận';
 
-      // Doanh thu:
-      // - Đơn 'Đã hủy': mặc định 0, nếu có file đối soát thì = Shopee TT (có thể âm/dương)
-      // - Đơn khác: = orderValue - totalFee
+      // Phát hiện đơn THHT (Trả hàng/Hoàn tiền):
+      // Trạng thái Hoàn thành + Shopee TT âm + có giao dịch điều chỉnh trong file tài chính
+      const isReturned = isCompleted
+        && hasPayout
+        && payoutValue < 0
+        && adjustmentMap.get(o.order_id) === true;
+
+      // ============ DOANH THU ============
+      // Đơn THHT: doanh thu = Shopee TT (âm)
+      // Đơn hủy thông thường: doanh thu = Shopee TT (âm nếu có), 0 nếu chưa có đối soát
+      // Đơn bình thường: doanh thu = orderValue - totalFee - feeTTLK
       let revenue: number;
-      if (isCancelled) {
-        revenue = hasPayout && isMainRow ? (payoutMap.get(o.order_id) || 0) : 0;
-        if (!isMainRow) revenue = 0;
+      let feeTTLK = 0;
+
+      if (isReturned) {
+        revenue = isMainRow ? payoutValue : 0;
+      } else if (isCancelled) {
+        revenue = isMainRow && hasPayout ? payoutValue : 0;
       } else {
-        revenue = orderValue - totalFee;
+        // Phí TTLK = chênh lệch khi Shopee TT < (orderValue - totalFee) trên DÒNG CHÍNH
+        // Áp dụng cho cả đơn (đặt ở dòng chính), dòng phụ phí TTLK = 0
+        const baseRevenue = orderValue - totalFee; // doanh thu chưa trừ TTLK
+        if (isMainRow && hasPayout && payoutValue >= 0 && payoutValue < baseRevenue) {
+          feeTTLK = baseRevenue - payoutValue;
+        }
+        revenue = baseRevenue - feeTTLK;
       }
 
-      // Giá vốn HB & Lợi nhuận: đơn hủy = 0 (không tính); đơn khác = bình thường
-      const cogs = isCancelled ? 0 : (costMap.get(o.sku || '') || 0) * quantity;
-      const profit = isCancelled ? 0 : revenue - cogs;
+      // ============ GIÁ VỐN ============
+      // Đơn THHT hoặc hủy: giá vốn = 0 (không tính)
+      const cogs = (isReturned || isCancelled) ? 0 : (costMap.get(o.sku || '') || 0) * quantity;
+
+      // ============ LỢI NHUẬN ============
+      // Đơn THHT: lợi nhuận = Shopee TT (âm)
+      // Đơn hủy: lợi nhuận = 0
+      // Đơn bình thường: lợi nhuận = Shopee TT - Giá vốn HB
+      //   (nếu chưa có Shopee TT thì hiển thị —)
+      let profit: number | null;
+      if (isReturned) {
+        profit = isMainRow ? payoutValue : 0;
+      } else if (isCancelled) {
+        profit = 0;
+      } else {
+        // Đơn bình thường: cần có giá vốn + Shopee TT mới tính được
+        if (cogs > 0 && hasPayout && isMainRow) {
+          profit = payoutValue - cogs;
+        } else {
+          profit = null; // hiển thị —
+        }
+      }
 
       const diff = shopeePayout !== null ? shopeePayout - revenue : null;
 
       return {
-        o, price, quantity, orderValue, totalFee, revenue, cogs, profit,
+        o, price, quantity, orderValue, totalFee, feeTTLK, revenue, cogs, profit,
         statusText: st.text, statusColor: st.color,
-        shopeePayout, diff, isMainRow, hasPayout, isCancelled,
+        shopeePayout, diff, isMainRow, hasPayout, isCancelled, isReturned,
       };
     });
-  }, [orders, costMap, payoutMap]);
+  }, [orders, costMap, payoutMap, adjustmentMap]);
 
   // Tập value duy nhất cho từng cột list-type (dùng cho dropdown checkbox)
   const uniqueValues = useMemo(() => ({
@@ -189,11 +236,12 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       if (!matchNum('price', r.price)) return false;
       if (!matchNum('orderValue', r.orderValue)) return false;
       if (!matchNum('fee', r.totalFee)) return false;
+      if (!matchNum('feeTTLK', r.feeTTLK)) return false;
       if (!matchNum('revenue', r.revenue)) return false;
       if (!matchNum('shopeePayout', r.shopeePayout ?? 0)) return false;
       if (!matchNum('diff', r.diff ?? 0)) return false;
       if (!matchNum('cogs', r.cogs)) return false;
-      if (!matchNum('profit', r.profit)) return false;
+      if (!matchNum('profit', r.profit ?? 0)) return false;
 
       // Filter text cho cột Mã đơn, Sản phẩm (single text search)
       const cf_orderId = cf['orderId'];
@@ -247,16 +295,13 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Chưa đăng nhập');
 
-      // Map order_id -> { payout: tổng cộng, count: số GD, lastDate }
-      const payouts = new Map<string, { payout: number; count: number; lastDate: Date | null }>();
+      // Map order_id -> { payout: tổng cộng, count: số GD, lastDate, hasAdjustment }
+      const payouts = new Map<string, { payout: number; count: number; lastDate: Date | null; hasAdjustment: boolean }>();
 
       for (const f of files) {
         const data = await f.arrayBuffer();
         const wb = XLSX.read(data, { type: 'array', cellDates: true });
         const sh = wb.Sheets[wb.SheetNames[0]];
-        // File có metadata phía trên - tìm hàng header thật
-        // Header có cột "Mã đơn hàng" - thường ở row 17 (index 17 = hàng 18)
-        // Strategy: thử các skiprows phổ biến, tìm dòng chứa "Mã đơn hàng"
         const allRows: any[][] = XLSX.utils.sheet_to_json(sh, { header: 1, defval: null, raw: false });
         let headerRowIdx = -1;
         for (let i = 0; i < Math.min(30, allRows.length); i++) {
@@ -274,26 +319,32 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         const c_orderIdx = headers.findIndex(h => norm(h) === norm('Mã đơn hàng'));
         const c_amountIdx = headers.findIndex(h => norm(h) === norm('Số tiền'));
         const c_dateIdx = headers.findIndex(h => norm(h) === norm('Ngày'));
+        const c_typeIdx = headers.findIndex(h => norm(h) === norm('Loại giao dịch'));
 
         if (c_orderIdx === -1 || c_amountIdx === -1) {
           setAlert({ type: 'error', text: `File "${f.name}" thiếu cột Mã đơn hàng hoặc Số tiền` });
           continue;
         }
 
-        // Parse các dòng giao dịch
         for (let i = headerRowIdx + 1; i < allRows.length; i++) {
           const row = allRows[i] || [];
           const orderId = String(row[c_orderIdx] ?? '').trim();
-          if (!orderId || orderId === '-') continue; // bỏ qua dòng không có mã đơn
+          if (!orderId || orderId === '-') continue;
 
           const amount = +(row[c_amountIdx] || 0);
           if (isNaN(amount)) continue;
 
           const dateVal = c_dateIdx >= 0 ? parseDate(row[c_dateIdx]) : null;
+          const txType = c_typeIdx >= 0 ? norm(row[c_typeIdx]) : '';
+          // Phát hiện giao dịch điều chỉnh: 'Cấn trừ Số dư TK Shopee' hoặc 'Điều chỉnh'
+          const isAdjustment = txType.includes('cấn trừ') || txType === norm('Điều chỉnh') || txType.includes('điều chỉnh');
 
-          const cur = payouts.get(orderId) || { payout: 0, count: 0, lastDate: null as Date | null };
+          const cur = payouts.get(orderId) || {
+            payout: 0, count: 0, lastDate: null as Date | null, hasAdjustment: false,
+          };
           cur.payout += amount;
           cur.count += 1;
+          if (isAdjustment) cur.hasAdjustment = true;
           if (dateVal && (!cur.lastDate || dateVal > cur.lastDate)) {
             cur.lastDate = dateVal;
           }
@@ -306,13 +357,13 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         return;
       }
 
-      // Build payload upsert vào Supabase
       const payload = Array.from(payouts.entries()).map(([orderId, data]) => ({
         user_id: user.id,
         order_id: orderId,
         shopee_payout: data.payout,
         transaction_count: data.count,
         last_transaction_date: data.lastDate?.toISOString() || null,
+        has_adjustment: data.hasAdjustment,
       }));
 
       const BATCH = 500;
@@ -331,7 +382,7 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
 
       // Reload reconciliation
       const { data: fresh } = await supabase
-        .from('reconciliation').select('order_id,shopee_payout');
+        .from('reconciliation').select('order_id,shopee_payout,has_adjustment');
       setReconciliation(fresh || []);
       router.refresh();
     } catch (err: any) {
@@ -526,11 +577,13 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       'Giá bán': r.price,
       'Giá trị ĐH': r.orderValue,
       'Tổng phí': r.totalFee,
+      'Phí TTLK': r.feeTTLK,
       'Doanh thu': r.revenue,
       'Shopee thanh toán': r.shopeePayout ?? '',
       'Chênh lệch': r.diff ?? '',
       'Giá vốn HB': r.cogs,
-      'Lợi nhuận': r.profit,
+      'Lợi nhuận': r.profit ?? '',
+      'TT THHT': r.isReturned ? 'THHT' : '',
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
@@ -640,6 +693,9 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
             <ColHeader label="Tổng phí" colKey="fee" width={colW('fee')} onResize={w => setWidth('fee', w)} align="right"
               filterable filterType="number"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Phí TTLK" colKey="feeTTLK" width={colW('feeTTLK')} onResize={w => setWidth('feeTTLK', w)} align="right"
+              filterable filterType="number"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
             <ColHeader label="Doanh thu" colKey="revenue" width={colW('revenue')} onResize={w => setWidth('revenue', w)} align="right"
               filterable filterType="number"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
@@ -655,10 +711,11 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
             <ColHeader label="Lợi nhuận" colKey="profit" width={colW('profit')} onResize={w => setWidth('profit', w)} align="right"
               filterable filterType="number"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="TT THHT" colKey="returnStatus" width={colW('returnStatus')} noResize />
           </tr></thead>
           <tbody>
             {pageRows.length === 0 && (
-              <tr><td colSpan={15} className="text-center text-gray-400 py-12">
+              <tr><td colSpan={17} className="text-center text-gray-400 py-12">
                 {orders.length === 0 ? 'Chưa có đơn hàng — hãy import file Shopee' : 'Không có đơn khớp bộ lọc'}
               </td></tr>
             )}
@@ -678,9 +735,14 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
                   <td className="text-right">{fmt(r.price)}</td>
                   <td className="text-right font-medium">{fmt(r.orderValue)}</td>
                   <td className="text-right text-yellow-600">{fmt(r.totalFee)}</td>
+                  <td className="text-right">
+                    {r.feeTTLK > 0
+                      ? <span className="text-orange-600">{fmt(r.feeTTLK)}</span>
+                      : <span className="text-gray-300">—</span>}
+                  </td>
                   <td className={`text-right font-medium ${
                     r.revenue < 0 ? 'text-red-600' :
-                    r.isCancelled ? 'text-gray-400' :
+                    (r.isCancelled || r.isReturned) ? 'text-gray-400' :
                     ''
                   }`}>{fmt(r.revenue)}</td>
                   <td className="text-right">
@@ -699,9 +761,17 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
                       </span>
                     ) : <span className="text-gray-300">—</span>}
                   </td>
-                  <td className="text-right">{r.isCancelled || r.cogs === 0 ? <span className="text-gray-300">—</span> : fmt(r.cogs)}</td>
-                  <td className={`text-right font-medium ${r.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                    {r.isCancelled || r.cogs === 0 ? <span className="text-gray-300">—</span> : fmt(r.profit)}
+                  <td className="text-right">{(r.isCancelled || r.isReturned || r.cogs === 0) ? <span className="text-gray-300">—</span> : fmt(r.cogs)}</td>
+                  <td className={`text-right font-medium ${
+                    r.profit === null ? '' :
+                    r.profit >= 0 ? 'text-green-600' : 'text-red-600'
+                  }`}>
+                    {r.profit === null ? <span className="text-gray-300">—</span> : fmt(r.profit)}
+                  </td>
+                  <td>
+                    {r.isReturned
+                      ? <span className="tag bg-red-100 text-red-700">THHT</span>
+                      : <span className="text-gray-300">—</span>}
                   </td>
                 </tr>
               );
