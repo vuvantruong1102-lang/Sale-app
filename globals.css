@@ -80,12 +80,16 @@
   table-layout: fixed;
   width: 100%;
 }
-.orders-tbl th, .orders-tbl td {
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* th: KHÔNG overflow hidden để handle hiển thị, td mới hidden */
+.orders-tbl th {
+  position: relative;
+  overflow: visible;
   white-space: nowrap;
 }
 .orders-tbl td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   vertical-align: middle;
 }
 .orders-tbl td > div.truncate {
@@ -95,35 +99,37 @@
 }
 
 /* Resize handle ở edge phải mỗi th */
-.orders-tbl th {
-  position: relative;
-}
 .col-resize-handle {
   position: absolute;
   top: 0;
-  right: -3px;
-  width: 6px;
+  right: -6px;
+  width: 12px;
   height: 100%;
   cursor: col-resize;
-  z-index: 10;
+  z-index: 50;
   user-select: none;
+  background: transparent;
+  touch-action: none;
 }
 .col-resize-handle::after {
   content: '';
   position: absolute;
-  top: 25%;
-  right: 3px;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
   width: 1px;
-  height: 50%;
-  background: #d1d5db;
+  height: 100%;
+  background: #e5e7eb;
   transition: all 0.15s;
+  pointer-events: none;
 }
-.col-resize-handle:hover::after,
+.col-resize-handle:hover::after {
+  background: #ee4d2d;
+  width: 3px;
+}
 .col-resize-handle:active::after {
   background: #ee4d2d;
-  width: 2px;
-  top: 0;
-  height: 100%;
+  width: 3px;
 }
 
 .fade-in { animation: fade 0.2s ease; }
