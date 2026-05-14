@@ -93,9 +93,10 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
   }, [reconciliation]);
 
   // Tính giá trị derived của mỗi row 1 lần để dùng cho filter + display
-  // shopeePayout chỉ hiển thị ở 1 dòng (dòng chính) của mỗi đơn để tránh nhân đôi
+  // shopeePayout & phí chỉ hiển thị ở 1 dòng chính của mỗi đơn để tránh nhân đôi
   const rowsWithCalc = useMemo(() => {
-    // Tìm dòng chính của mỗi đơn (dòng có total_paid cao nhất)
+    // Tìm dòng chính của mỗi đơn = dòng có Giá trị ĐH (price_deal × qty) cao nhất
+    // → SKU có doanh thu cao hơn sẽ gánh phí
     const mainRowKey = new Map<string, string>(); // order_id -> unique_key dòng chính
     const grouped = new Map<string, Order[]>();
     orders.forEach(o => {
@@ -103,14 +104,17 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       arr.push(o);
       grouped.set(o.order_id, arr);
     });
+    const orderValueOf = (l: Order) => (l.price_deal || 0) * (l.quantity || 1);
     grouped.forEach((lines, oid) => {
       if (lines.length === 1) {
         mainRowKey.set(oid, lines[0].unique_key);
         return;
       }
       let main = lines[0];
+      let maxVal = orderValueOf(main);
       for (const l of lines) {
-        if ((l.total_paid || 0) > (main.total_paid || 0)) main = l;
+        const v = orderValueOf(l);
+        if (v > maxVal) { main = l; maxVal = v; }
       }
       mainRowKey.set(oid, main.unique_key);
     });
@@ -750,10 +754,12 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       accMap.forEach((acc, oid) => {
         const lines = tiktokOrdersByOid.get(oid);
         if (!lines || lines.length === 0) return;
-        // Tìm dòng chính (total_paid cao nhất)
+        // Tìm dòng chính = dòng có Giá trị ĐH cao nhất (price_deal × qty)
         let main = lines[0];
+        let maxVal = (main.price_deal || 0) * (main.quantity || 1);
         for (const l of lines) {
-          if ((l.total_paid || 0) > (main.total_paid || 0)) main = l;
+          const v = (l.price_deal || 0) * (l.quantity || 1);
+          if (v > maxVal) { main = l; maxVal = v; }
         }
         orderUpdates.push({ unique_key: main.unique_key, fee_fix: acc.totalFee });
         feeAppliedCount++;
@@ -907,11 +913,16 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       let dedupedCount = 0;
       byOrderId.forEach((lines) => {
         if (lines.length <= 1) return;
+        // Dòng chính = dòng có "Giá trị ĐH" cao nhất (Giá ưu đãi × SL − Mã giảm Shop)
+        // Voucher Shop chỉ tính 1 lần ở cấp đơn → lấy max của shop_voucher (đỉnh) làm voucher chung
+        // Để đơn giản: orderValue dòng = price_deal × qty (chưa trừ voucher) đủ để so sánh
+        const orderValueOf = (l: Order) => (l.price_deal || 0) * (l.quantity || 1);
         let mainIdx = 0;
-        let maxPaid = lines[0].total_paid || 0;
+        let maxVal = orderValueOf(lines[0]);
         for (let i = 1; i < lines.length; i++) {
-          if ((lines[i].total_paid || 0) > maxPaid) {
-            maxPaid = lines[i].total_paid || 0;
+          const v = orderValueOf(lines[i]);
+          if (v > maxVal) {
+            maxVal = v;
             mainIdx = i;
           }
         }
