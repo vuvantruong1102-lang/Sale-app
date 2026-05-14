@@ -16,22 +16,21 @@ const PAGE_SIZE = 50;
 
 // Cấu hình cột mặc định cho bảng đơn hàng
 const DEFAULT_COLS: ColDef[] = [
-  { key: 'date',       width: 120, minWidth: 90 },
-  { key: 'platform',   width: 80,  minWidth: 60 },
-  { key: 'orderId',    width: 140, minWidth: 100 },
-  { key: 'carrier',    width: 110, minWidth: 70 },
-  { key: 'package',    width: 150, minWidth: 80 },
-  { key: 'status',     width: 105, minWidth: 70 },
-  { key: 'product',    width: 280, minWidth: 120 },
-  { key: 'sku',        width: 95,  minWidth: 60 },
-  { key: 'price',      width: 100, minWidth: 80 },
-  { key: 'fee',        width: 95,  minWidth: 80 },
-  { key: 'revenue',    width: 105, minWidth: 80 },
+  { key: 'date',         width: 120, minWidth: 90 },
+  { key: 'platform',     width: 80,  minWidth: 60 },
+  { key: 'orderId',      width: 140, minWidth: 100 },
+  { key: 'status',       width: 105, minWidth: 70 },
+  { key: 'product',      width: 280, minWidth: 120 },
+  { key: 'sku',          width: 95,  minWidth: 60 },
+  { key: 'quantity',     width: 70,  minWidth: 50 },
+  { key: 'price',        width: 100, minWidth: 80 },
+  { key: 'orderValue',   width: 110, minWidth: 80 },
+  { key: 'fee',          width: 95,  minWidth: 80 },
+  { key: 'revenue',      width: 105, minWidth: 80 },
   { key: 'shopeePayout', width: 120, minWidth: 90 },
-  { key: 'diff',       width: 100, minWidth: 80 },
-  { key: 'cogs',       width: 100, minWidth: 80 },
-  { key: 'profit',     width: 105, minWidth: 80 },
-  { key: 'invoice',    width: 80,  minWidth: 60 },
+  { key: 'diff',         width: 100, minWidth: 80 },
+  { key: 'cogs',         width: 100, minWidth: 80 },
+  { key: 'profit',       width: 105, minWidth: 80 },
 ];
 
 // Type cho mỗi col filter
@@ -110,20 +109,37 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
 
     return orders.map(o => {
       const price = (o.price_deal || 0) - (o.shop_voucher || 0);
+      const quantity = o.quantity || 1;
+      const orderValue = price * quantity;
       const totalFee = (o.fee_fix || 0) + (o.fee_service || 0) + (o.fee_payment || 0);
-      const revenue = price - totalFee;
-      const cogs = (costMap.get(o.sku || '') || 0) * (o.quantity || 1);
-      const profit = revenue - cogs;
+      const cogs = (costMap.get(o.sku || '') || 0) * quantity;
       const st = shortStatus(o.status || '');
-      // Shopee thanh toán chỉ hiển thị ở dòng chính, payoutMap.has = có dữ liệu đối soát
+
+      // Shopee TT chỉ hiển thị ở dòng chính, payoutMap.has = có dữ liệu đối soát
       const isMainRow = mainRowKey.get(o.order_id) === o.unique_key;
       const hasPayout = payoutMap.has(o.order_id);
       const shopeePayout = isMainRow && hasPayout ? (payoutMap.get(o.order_id) || 0) : null;
+
+      // Doanh thu:
+      // - Đơn 'Đã hủy': mặc định 0, nếu có file đối soát thì = Shopee TT (có thể âm/dương)
+      // - Đơn khác: = orderValue - totalFee
+      const isCancelled = st.text === 'Đã hủy';
+      let revenue: number;
+      if (isCancelled) {
+        revenue = hasPayout && isMainRow ? (payoutMap.get(o.order_id) || 0) : 0;
+        // Dòng phụ của đơn hủy → 0 (vì payout đã được tính ở dòng chính rồi)
+        if (!isMainRow) revenue = 0;
+      } else {
+        revenue = orderValue - totalFee;
+      }
+
+      const profit = revenue - cogs;
       const diff = shopeePayout !== null ? shopeePayout - revenue : null;
+
       return {
-        o, price, totalFee, revenue, cogs, profit,
+        o, price, quantity, orderValue, totalFee, revenue, cogs, profit,
         statusText: st.text, statusColor: st.color,
-        shopeePayout, diff, isMainRow, hasPayout,
+        shopeePayout, diff, isMainRow, hasPayout, isCancelled,
       };
     });
   }, [orders, costMap, payoutMap]);
@@ -131,10 +147,8 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
   // Tập value duy nhất cho từng cột list-type (dùng cho dropdown checkbox)
   const uniqueValues = useMemo(() => ({
     platform: new Set(orders.map(o => o.platform === 'shopee' ? 'Shopee' : 'TikTok')),
-    carrier: new Set(orders.map(o => o.carrier || '(trống)').sort()),
     status: new Set(rowsWithCalc.map(r => r.statusText).sort()),
     sku: new Set(orders.map(o => o.sku || '(trống)').sort()),
-    invoice: new Set(['Đã xuất', 'Chưa']),
   }), [orders, rowsWithCalc]);
 
   // ============ FILTER LOGIC ============
@@ -167,11 +181,11 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       };
 
       if (!matchList('platform', o.platform === 'shopee' ? 'Shopee' : 'TikTok')) return false;
-      if (!matchList('carrier', o.carrier || '(trống)')) return false;
       if (!matchList('status', r.statusText)) return false;
       if (!matchList('sku', o.sku || '(trống)')) return false;
-      if (!matchList('invoice', o.invoice_issued ? 'Đã xuất' : 'Chưa')) return false;
+      if (!matchNum('quantity', r.quantity)) return false;
       if (!matchNum('price', r.price)) return false;
+      if (!matchNum('orderValue', r.orderValue)) return false;
       if (!matchNum('fee', r.totalFee)) return false;
       if (!matchNum('revenue', r.revenue)) return false;
       if (!matchNum('shopeePayout', r.shopeePayout ?? 0)) return false;
@@ -179,16 +193,11 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       if (!matchNum('cogs', r.cogs)) return false;
       if (!matchNum('profit', r.profit)) return false;
 
-      // Filter text cho cột Mã đơn, Mã kiện, Sản phẩm (single text search)
+      // Filter text cho cột Mã đơn, Sản phẩm (single text search)
       const cf_orderId = cf['orderId'];
       if (cf_orderId && cf_orderId.type === 'list' && cf_orderId.selected.size > 0) {
         const q = norm(Array.from(cf_orderId.selected)[0]);
         if (!norm(o.order_id).includes(q)) return false;
-      }
-      const cf_pkg = cf['package'];
-      if (cf_pkg && cf_pkg.type === 'list' && cf_pkg.selected.size > 0) {
-        const q = norm(Array.from(cf_pkg.selected)[0]);
-        if (!norm(o.package_id).includes(q)) return false;
       }
       const cf_prod = cf['product'];
       if (cf_prod && cf_prod.type === 'list' && cf_prod.selected.size > 0) {
@@ -508,20 +517,18 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       'Ngày đặt': r.o.date_order,
       'Sàn': r.o.platform,
       'Mã đơn': r.o.order_id,
-      'ĐVVC': r.o.carrier,
-      'Mã kiện': r.o.package_id,
       'Trạng thái': r.o.status,
       'Sản phẩm': r.o.product_name,
       'SKU': r.o.sku,
-      'Số lượng': r.o.quantity,
+      'Số lượng': r.quantity,
       'Giá bán': r.price,
+      'Giá trị ĐH': r.orderValue,
       'Tổng phí': r.totalFee,
       'Doanh thu': r.revenue,
       'Shopee thanh toán': r.shopeePayout ?? '',
       'Chênh lệch': r.diff ?? '',
       'Giá vốn HB': r.cogs,
       'Lợi nhuận': r.profit,
-      'Đã xuất HĐ': r.o.invoice_issued ? 'Có' : 'Không',
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
@@ -610,12 +617,6 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
             <ColHeader label="Mã đơn" colKey="orderId" width={colW('orderId')} onResize={w => setWidth('orderId', w)}
               filterable filterType="text"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
-            <ColHeader label="ĐVVC" colKey="carrier" width={colW('carrier')} onResize={w => setWidth('carrier', w)}
-              filterable filterType="list" filterValues={Array.from(uniqueValues.carrier)}
-              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
-            <ColHeader label="Mã kiện" colKey="package" width={colW('package')} onResize={w => setWidth('package', w)}
-              filterable filterType="text"
-              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
             <ColHeader label="Trạng thái" colKey="status" width={colW('status')} onResize={w => setWidth('status', w)}
               filterable filterType="list" filterValues={Array.from(uniqueValues.status)}
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
@@ -625,7 +626,13 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
             <ColHeader label="SKU" colKey="sku" width={colW('sku')} onResize={w => setWidth('sku', w)}
               filterable filterType="list" filterValues={Array.from(uniqueValues.sku)}
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="SL" colKey="quantity" width={colW('quantity')} onResize={w => setWidth('quantity', w)} align="right"
+              filterable filterType="number"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
             <ColHeader label="Giá bán" colKey="price" width={colW('price')} onResize={w => setWidth('price', w)} align="right"
+              filterable filterType="number"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Giá trị ĐH" colKey="orderValue" width={colW('orderValue')} onResize={w => setWidth('orderValue', w)} align="right"
               filterable filterType="number"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
             <ColHeader label="Tổng phí" colKey="fee" width={colW('fee')} onResize={w => setWidth('fee', w)} align="right"
@@ -646,13 +653,10 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
             <ColHeader label="Lợi nhuận" colKey="profit" width={colW('profit')} onResize={w => setWidth('profit', w)} align="right"
               filterable filterType="number"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
-            <ColHeader label="HĐ" colKey="invoice" width={colW('invoice')} noResize
-              filterable filterType="list" filterValues={Array.from(uniqueValues.invoice)}
-              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
           </tr></thead>
           <tbody>
             {pageRows.length === 0 && (
-              <tr><td colSpan={16} className="text-center text-gray-400 py-12">
+              <tr><td colSpan={15} className="text-center text-gray-400 py-12">
                 {orders.length === 0 ? 'Chưa có đơn hàng — hãy import file Shopee' : 'Không có đơn khớp bộ lọc'}
               </td></tr>
             )}
@@ -663,20 +667,23 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
                   <td className="text-xs">{fmtDate(o.date_order)}</td>
                   <td><span className={`tag ${tagClass(o.platform)}`}>{o.platform === 'shopee' ? 'Shopee' : 'TikTok'}</span></td>
                   <td className="font-medium text-xs">{o.order_id}</td>
-                  <td className="text-xs">{o.carrier || '-'}</td>
-                  <td className="text-xs">{o.package_id || '-'}</td>
                   <td><span className={`tag ${tagClass(r.statusColor)}`}>{r.statusText}</span></td>
                   <td>
                     <div className="truncate" title={o.product_name}>{o.product_name || '-'}</div>
-                    {o.quantity && o.quantity > 1 && <span className="text-xs text-gray-400">×{o.quantity}</span>}
                   </td>
                   <td className="text-xs">{o.sku || '-'}</td>
+                  <td className="text-right">{r.quantity}</td>
                   <td className="text-right">{fmt(r.price)}</td>
+                  <td className="text-right font-medium">{fmt(r.orderValue)}</td>
                   <td className="text-right text-yellow-600">{fmt(r.totalFee)}</td>
-                  <td className="text-right">{fmt(r.revenue)}</td>
+                  <td className={`text-right font-medium ${
+                    r.revenue < 0 ? 'text-red-600' :
+                    r.isCancelled ? 'text-gray-400' :
+                    ''
+                  }`}>{fmt(r.revenue)}</td>
                   <td className="text-right">
                     {r.shopeePayout !== null
-                      ? <span className="text-blue-600 font-medium">{fmt(r.shopeePayout)}</span>
+                      ? <span className={`font-medium ${r.shopeePayout < 0 ? 'text-red-600' : 'text-blue-600'}`}>{fmt(r.shopeePayout)}</span>
                       : <span className="text-gray-300">—</span>}
                   </td>
                   <td className="text-right">
@@ -694,9 +701,6 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
                   <td className={`text-right font-medium ${r.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                     {r.cogs > 0 ? fmt(r.profit) : <span className="text-gray-300">—</span>}
                   </td>
-                  <td>{o.invoice_issued
-                    ? <span className="tag bg-green-100 text-green-700">✓</span>
-                    : <span className="tag bg-gray-100 text-gray-500">Chưa</span>}</td>
                 </tr>
               );
             })}
