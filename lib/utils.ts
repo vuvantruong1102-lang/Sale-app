@@ -70,11 +70,12 @@ export const inRange = (d: any, range: string, from?: string, to?: string): bool
   return true;
 };
 
-export const norm = (s: any): string => String(s ?? '').toLowerCase().trim();
+export const norm = (s: any): string =>
+  String(s ?? '').normalize('NFC').toLowerCase().trim();
 
-// Tìm cột linh hoạt theo nhiều tên khả năng
+// Tìm cột linh hoạt theo nhiều tên khả năng (xử lý Unicode NFD từ Shopee)
 export function findCol(headers: string[], ...keys: string[]): string | null {
-  // Exact match trước
+  // Exact match trước (đã normalize NFC)
   for (const k of keys) {
     const n = norm(k);
     const found = headers.find(h => norm(h) === n);
