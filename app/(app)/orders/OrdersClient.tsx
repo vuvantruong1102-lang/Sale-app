@@ -236,11 +236,22 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         const d = new Date(dateStr);
         if (isNaN(d.getTime())) return false;
         // Convert sang YYYY-MM-DD theo LOCAL timezone (không phải UTC)
-        // Vì các ô <input type="date"> trả về YYYY-MM-DD theo local
         const y = d.getFullYear();
         const m = String(d.getMonth() + 1).padStart(2, '0');
         const day = String(d.getDate()).padStart(2, '0');
         const ymd = `${y}-${m}-${day}`;
+        // DEBUG: log 1 sample đầu tiên để biết format
+        if (typeof window !== 'undefined' && !(window as any).__dateFilterDebugged) {
+          (window as any).__dateFilterDebugged = true;
+          console.log('[DateFilter Debug]', {
+            input_dateStr: dateStr,
+            parsed_date: d.toString(),
+            computed_ymd: ymd,
+            filter_from: f.from,
+            filter_to: f.to,
+            comparison: f.from ? `"${ymd}" >= "${f.from}"? ${ymd >= f.from}` : 'no from',
+          });
+        }
         if (f.from && ymd < f.from) return false;
         if (f.to && ymd > f.to) return false;
         return true;
