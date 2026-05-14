@@ -38,9 +38,11 @@ const DEFAULT_COLS: ColDef[] = [
 // Type cho mỗi col filter
 // - 'list': checkbox danh sách value (text/category)
 // - 'number': range min/max
+// - 'date': range from/to date
 type ColFilter =
   | { type: 'list'; selected: Set<string> }   // empty Set = ALL
-  | { type: 'number'; min?: number; max?: number };
+  | { type: 'number'; min?: number; max?: number }
+  | { type: 'date'; from?: string; to?: string };
 
 type Props = {
   initialOrders: Order[];
@@ -218,7 +220,21 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         if (f.max !== undefined && val > f.max) return false;
         return true;
       };
+      // Helper: kiểm tra date filter (so sánh date-only, không tính giờ)
+      const matchDate = (key: string, dateStr: string | null | undefined) => {
+        const f = cf[key];
+        if (!f || f.type !== 'date') return true;
+        if (!dateStr) return false; // không có ngày = không match
+        // Convert dateStr (ISO) sang YYYY-MM-DD để so sánh
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return false;
+        const ymd = d.toISOString().slice(0, 10);
+        if (f.from && ymd < f.from) return false;
+        if (f.to && ymd > f.to) return false;
+        return true;
+      };
 
+      if (!matchDate('date', o.date_order)) return false;
       if (!matchList('platform', o.platform === 'shopee' ? 'Shopee' : 'TikTok')) return false;
       if (!matchList('status', r.statusText)) return false;
       if (!matchList('sku', o.sku || '(trống)')) return false;
@@ -266,13 +282,45 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
 
   const activeFilterCount = Object.values(colFilters).filter(f => {
     if (f.type === 'list') return f.selected.size > 0;
-    return f.min !== undefined || f.max !== undefined;
+    if (f.type === 'number') return f.min !== undefined || f.max !== undefined;
+    if (f.type === 'date') return f.from !== undefined || f.to !== undefined;
+    return false;
   }).length;
 
   const clearAllFilters = () => {
     setColFilters({});
     setPage(1);
   };
+
+  // ============ TÍNH TỔNG CHO CÁC CỘT SỐ (theo filtered rows) ============
+  const totals = useMemo(() => {
+    let totalQty = 0, totalPrice = 0, totalOrderValue = 0, totalFee = 0, totalFeeTTLK = 0;
+    let totalRevenue = 0, totalShopeePayout = 0, totalDiff = 0, totalCogs = 0, totalProfit = 0;
+    let countShopeePayout = 0, countProfit = 0;
+    filtered.forEach(r => {
+      totalQty += r.quantity || 0;
+      totalPrice += r.price || 0;
+      totalOrderValue += r.orderValue || 0;
+      totalFee += r.totalFee || 0;
+      totalFeeTTLK += r.feeTTLK || 0;
+      totalRevenue += r.revenue || 0;
+      totalCogs += r.cogs || 0;
+      if (r.shopeePayout !== null) {
+        totalShopeePayout += r.shopeePayout;
+        countShopeePayout++;
+      }
+      if (r.diff !== null) totalDiff += r.diff;
+      if (r.profit !== null) {
+        totalProfit += r.profit;
+        countProfit++;
+      }
+    });
+    return {
+      totalQty, totalPrice, totalOrderValue, totalFee, totalFeeTTLK,
+      totalRevenue, totalShopeePayout, totalDiff, totalCogs, totalProfit,
+      countShopeePayout, countProfit,
+    };
+  }, [filtered]);
 
   // ============ IMPORT FILE ĐỐI SOÁT SHOPEE ============
   const handleImportRecon = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -655,7 +703,9 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
             {cols.map(c => <col key={c.key} style={{ width: c.width }} />)}
           </colgroup>
           <thead><tr>
-            <ColHeader label="Ngày đặt" colKey="date" width={colW('date')} onResize={w => setWidth('date', w)} />
+            <ColHeader label="Ngày đặt" colKey="date" width={colW('date')} onResize={w => setWidth('date', w)}
+              filterable filterType="date"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
             <ColHeader label="Sàn" colKey="platform" width={colW('platform')} onResize={w => setWidth('platform', w)}
               filterable filterType="list" filterValues={Array.from(uniqueValues.platform)}
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
@@ -704,6 +754,32 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
             <ColHeader label="TT THHT" colKey="returnStatus" width={colW('returnStatus')} noResize />
           </tr></thead>
           <tbody>
+            {/* HÀNG TỔNG CỘNG - hiển thị tổng theo bộ lọc hiện tại */}
+            <tr className="totals-row">
+              <td className="font-semibold text-xs">TỔNG ({filtered.length})</td>
+              <td></td>
+              <td></td>
+              <td></td>
+              <td></td>
+              <td></td>
+              <td className="text-right font-semibold">{fmt(totals.totalQty)}</td>
+              <td></td>
+              <td className="text-right font-semibold">{fmt(totals.totalOrderValue)}</td>
+              <td className="text-right font-semibold text-yellow-600">{fmt(totals.totalFee)}</td>
+              <td className="text-right font-semibold text-orange-600">{fmt(totals.totalFeeTTLK)}</td>
+              <td className={`text-right font-semibold ${totals.totalRevenue < 0 ? 'text-red-600' : ''}`}>{fmt(totals.totalRevenue)}</td>
+              <td className={`text-right font-semibold ${totals.totalShopeePayout < 0 ? 'text-red-600' : 'text-blue-600'}`}>
+                {totals.countShopeePayout > 0 ? fmt(totals.totalShopeePayout) : <span className="text-gray-300">—</span>}
+              </td>
+              <td className={`text-right font-semibold ${totals.totalDiff < 0 ? 'text-red-600' : totals.totalDiff > 0 ? 'text-green-600' : ''}`}>
+                {totals.countShopeePayout > 0 ? `${totals.totalDiff > 0 ? '+' : ''}${fmt(totals.totalDiff)}` : <span className="text-gray-300">—</span>}
+              </td>
+              <td className="text-right font-semibold">{fmt(totals.totalCogs)}</td>
+              <td className={`text-right font-semibold ${totals.totalProfit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                {totals.countProfit > 0 ? fmt(totals.totalProfit) : <span className="text-gray-300">—</span>}
+              </td>
+              <td></td>
+            </tr>
             {pageRows.length === 0 && (
               <tr><td colSpan={17} className="text-center text-gray-400 py-12">
                 {orders.length === 0 ? 'Chưa có đơn hàng — hãy import file Shopee' : 'Không có đơn khớp bộ lọc'}
@@ -795,7 +871,7 @@ type ColHeaderProps = {
   align?: 'left' | 'right';
   noResize?: boolean;
   filterable?: boolean;
-  filterType?: 'list' | 'number' | 'text';
+  filterType?: 'list' | 'number' | 'text' | 'date';
   filterValues?: string[];
   filters?: Record<string, ColFilter>;
   setFilters?: (f: Record<string, ColFilter>) => void;
@@ -811,7 +887,8 @@ function ColHeader({
   const f = filters?.[colKey];
   const hasFilter = !!f && (
     (f.type === 'list' && f.selected.size > 0) ||
-    (f.type === 'number' && (f.min !== undefined || f.max !== undefined))
+    (f.type === 'number' && (f.min !== undefined || f.max !== undefined)) ||
+    (f.type === 'date' && (f.from !== undefined || f.to !== undefined))
   );
   const isOpen = open === colKey;
 
@@ -854,7 +931,7 @@ function ColHeader({
 // ============ COMPONENT: POPUP FILTER ============
 type FilterPopupProps = {
   colKey: string;
-  type: 'list' | 'number' | 'text';
+  type: 'list' | 'number' | 'text' | 'date';
   values?: string[];
   current?: ColFilter;
   onApply: (f: ColFilter | null) => void;
@@ -952,6 +1029,67 @@ function FilterPopup({ type, values, current, onApply, onClose }: FilterPopupPro
             if (min !== '' && !isNaN(+min)) f.min = +min;
             if (max !== '' && !isNaN(+max)) f.max = +max;
             if (f.min === undefined && f.max === undefined) onApply(null);
+            else onApply(f);
+          }}>
+            <Check size={12} /> Áp dụng
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ===== DATE FILTER (from/to date) =====
+  if (type === 'date') {
+    const today = new Date().toISOString().slice(0, 10);
+    const [from, setFrom] = useState<string>(
+      current?.type === 'date' && current.from ? current.from : ''
+    );
+    const [to, setTo] = useState<string>(
+      current?.type === 'date' && current.to ? current.to : ''
+    );
+    // Quick presets
+    const setRange = (days: number) => {
+      const d = new Date();
+      const toStr = d.toISOString().slice(0, 10);
+      d.setDate(d.getDate() - days + 1);
+      const fromStr = d.toISOString().slice(0, 10);
+      setFrom(fromStr);
+      setTo(toStr);
+    };
+    const setMonth = () => {
+      const d = new Date();
+      const fromStr = new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
+      setFrom(fromStr);
+      setTo(today);
+    };
+    return (
+      <div ref={popupRef} className="filter-popup" onClick={e => e.stopPropagation()}>
+        <div className="text-xs text-gray-500 mb-2">Khoảng ngày</div>
+        <div className="flex flex-wrap gap-1 mb-3 text-xs">
+          <button className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200" onClick={() => { setFrom(today); setTo(today); }}>Hôm nay</button>
+          <button className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200" onClick={() => setRange(7)}>7 ngày</button>
+          <button className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200" onClick={() => setRange(30)}>30 ngày</button>
+          <button className="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200" onClick={setMonth}>Tháng này</button>
+        </div>
+        <div className="space-y-2">
+          <div>
+            <label className="text-[11px] text-gray-500">Từ ngày:</label>
+            <input type="date" className="input input-sm w-full"
+              value={from} onChange={e => setFrom(e.target.value)} autoFocus />
+          </div>
+          <div>
+            <label className="text-[11px] text-gray-500">Đến ngày:</label>
+            <input type="date" className="input input-sm w-full"
+              value={to} onChange={e => setTo(e.target.value)} />
+          </div>
+        </div>
+        <div className="filter-actions">
+          <button className="btn btn-secondary btn-sm" onClick={() => onApply(null)}>Xóa lọc</button>
+          <button className="btn btn-primary btn-sm" onClick={() => {
+            const f: ColFilter = { type: 'date' };
+            if (from) f.from = from;
+            if (to) f.to = to;
+            if (f.from === undefined && f.to === undefined) onApply(null);
             else onApply(f);
           }}>
             <Check size={12} /> Áp dụng
