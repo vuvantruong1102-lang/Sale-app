@@ -86,13 +86,6 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
     return m;
   }, [reconciliation]);
 
-  // Map order_id -> có giao dịch điều chỉnh ('Cấn trừ Số dư TK Shopee' / 'Điều chỉnh')
-  const adjustmentMap = useMemo(() => {
-    const m = new Map<string, boolean>();
-    reconciliation.forEach(r => m.set(r.order_id, !!r.has_adjustment));
-    return m;
-  }, [reconciliation]);
-
   // Tính giá trị derived của mỗi row 1 lần để dùng cho filter + display
   // shopeePayout chỉ hiển thị ở 1 dòng (dòng chính) của mỗi đơn để tránh nhân đôi
   const rowsWithCalc = useMemo(() => {
@@ -117,9 +110,9 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
     });
 
     return orders.map(o => {
-      const price = (o.price_deal || 0) - (o.shop_voucher || 0);
+      const price = o.price_deal || 0;
       const quantity = o.quantity || 1;
-      const orderValue = price * quantity;
+      const orderValue = price * quantity - (o.shop_voucher || 0);
       const totalFee = (o.fee_fix || 0) + (o.fee_service || 0) + (o.fee_payment || 0);
       const st = shortStatus(o.status || '');
 
@@ -133,11 +126,8 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       const isCompleted = st.text === 'Hoàn thành' || st.text === 'Đã nhận';
 
       // Phát hiện đơn THHT (Trả hàng/Hoàn tiền):
-      // Trạng thái Hoàn thành + Shopee TT âm + có giao dịch điều chỉnh trong file tài chính
-      const isReturned = isCompleted
-        && hasPayout
-        && payoutValue < 0
-        && adjustmentMap.get(o.order_id) === true;
+      // Trạng thái "Hoàn thành" + Shopee TT âm
+      const isReturned = isCompleted && hasPayout && payoutValue < 0;
 
       // ============ DOANH THU ============
       // Đơn THHT: doanh thu = Shopee TT (âm)
@@ -191,7 +181,7 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         shopeePayout, diff, isMainRow, hasPayout, isCancelled, isReturned,
       };
     });
-  }, [orders, costMap, payoutMap, adjustmentMap]);
+  }, [orders, costMap, payoutMap]);
 
   // Tập value duy nhất cho từng cột list-type (dùng cho dropdown checkbox)
   const uniqueValues = useMemo(() => ({
