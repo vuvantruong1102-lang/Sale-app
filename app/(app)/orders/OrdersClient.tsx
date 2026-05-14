@@ -174,6 +174,39 @@ export default function OrdersClient({ initialOrders, products }: Props) {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Không xác thực được người dùng');
 
+      // ============================================================
+      // DEDUPE: Đơn nhiều dòng (multi-SKU) — Shopee lặp phí ở mỗi dòng
+      // Chỉ giữ phí ở "dòng chính" (total_paid cao nhất), các dòng phụ phí = 0
+      // ============================================================
+      const byOrderId = new Map<string, Order[]>();
+      allRows.forEach(r => {
+        const arr = byOrderId.get(r.order_id) || [];
+        arr.push(r);
+        byOrderId.set(r.order_id, arr);
+      });
+      let dedupedCount = 0;
+      byOrderId.forEach((lines, orderId) => {
+        if (lines.length <= 1) return;
+        // Tìm dòng có total_paid cao nhất - đó là dòng chính
+        let mainIdx = 0;
+        let maxPaid = lines[0].total_paid || 0;
+        for (let i = 1; i < lines.length; i++) {
+          if ((lines[i].total_paid || 0) > maxPaid) {
+            maxPaid = lines[i].total_paid || 0;
+            mainIdx = i;
+          }
+        }
+        // Set phí = 0 cho tất cả dòng KHÔNG phải dòng chính
+        lines.forEach((line, i) => {
+          if (i !== mainIdx) {
+            line.fee_fix = 0;
+            line.fee_service = 0;
+            line.fee_payment = 0;
+            dedupedCount++;
+          }
+        });
+      });
+
       // Lấy danh sách unique_key đã có để biết added vs updated
       const existingKeys = new Set(orders.map(o => o.unique_key));
       allRows.forEach(r => {
@@ -209,7 +242,12 @@ export default function OrdersClient({ initialOrders, products }: Props) {
         await supabase.from('products').upsert(newProducts, { onConflict: 'user_id,sku', ignoreDuplicates: true });
       }
 
-      setAlert({ type: 'success', text: `✓ Đã import ${total} dòng — ${added} đơn mới, ${updated} đơn cập nhật${newProducts.length ? `, ${newProducts.length} SKU mới đồng bộ vào kho` : ''}` });
+      setAlert({
+        type: 'success',
+        text: `✓ Đã import ${total} dòng — ${added} đơn mới, ${updated} đơn cập nhật${
+          newProducts.length ? `, ${newProducts.length} SKU mới đồng bộ vào kho` : ''
+        }${dedupedCount ? ` • Đã chống lặp phí cho ${dedupedCount} dòng phụ` : ''}`
+      });
 
       // Reload danh sách orders
       const { data: fresh } = await supabase
