@@ -622,13 +622,188 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
     }
   };
 
-  // ============ IMPORT VÍ TIKTOK (sẽ implement khi có file mẫu) ============
+  // ============ IMPORT VÍ TIKTOK SHOP (đối soát tài chính) ============
   const handleImportTiktokRecon = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    e.target.value = '';
-    setAlert({
-      type: 'error',
-      text: 'Chức năng "Import Ví TikTok" chưa được cấu hình — vui lòng gửi file tài chính TikTok mẫu để map các cột',
-    });
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setImportingTiktokRecon(true);
+    setAlert(null);
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Chưa đăng nhập');
+
+      // Mỗi đơn có thể có nhiều dòng giao dịch (đơn hàng + điều chỉnh)
+      // → cộng dồn settlement_amount và total_fee cho cùng order_id
+      type Acc = {
+        payout: number;       // Tổng số tiền quyết toán (cột F)
+        totalFee: number;     // Tổng phí (cột N) - đổi dấu thành dương
+        count: number;
+        lastDate: Date | null;
+      };
+      const accMap = new Map<string, Acc>();
+
+      for (const f of files) {
+        const data = await f.arrayBuffer();
+        const wb = XLSX.read(data, { type: 'array', cellDates: true });
+        // Sheet "Chi tiết đơn hàng" thường là sheet đầu, nếu không thì tìm
+        let sheetName = wb.SheetNames[0];
+        for (const n of wb.SheetNames) {
+          if (norm(n).includes('chi tiết đơn hàng')) { sheetName = n; break; }
+        }
+        const sh = wb.Sheets[sheetName];
+        const allRows: any[][] = XLSX.utils.sheet_to_json(sh, { header: 1, defval: null, raw: false });
+        if (allRows.length < 2) continue;
+
+        // Row 0 = header (file này không có meta phía trên)
+        // Để an toàn vẫn scan tìm dòng có chữ "ID đơn hàng"
+        let headerRowIdx = -1;
+        for (let i = 0; i < Math.min(10, allRows.length); i++) {
+          const row = allRows[i] || [];
+          if (row.some(c => norm(c).includes('id đơn hàng'))) {
+            headerRowIdx = i;
+            break;
+          }
+        }
+        if (headerRowIdx === -1) {
+          setAlert({ type: 'error', text: `File "${f.name}" không tìm thấy cột "ID đơn hàng"` });
+          continue;
+        }
+        const headers = (allRows[headerRowIdx] || []).map((h: any) => String(h ?? '').trim());
+        const idx = (key: string) => headers.findIndex(h => norm(h) === norm(key));
+
+        const c_orderId  = idx('ID đơn hàng/điều chỉnh');
+        const c_txType   = idx('Loại giao dịch');
+        const c_dateSet  = idx('Thời gian quyết toán đơn hàng');
+        const c_payout   = idx('Tổng số tiền quyết toán');   // F
+        const c_totalFee = idx('Tổng phí');                   // N
+
+        if (c_orderId === -1 || c_payout === -1) {
+          setAlert({ type: 'error', text: `File "${f.name}" thiếu cột "ID đơn hàng" hoặc "Tổng số tiền quyết toán"` });
+          continue;
+        }
+
+        for (let i = headerRowIdx + 1; i < allRows.length; i++) {
+          const row = allRows[i] || [];
+          const orderId = String(row[c_orderId] ?? '').trim();
+          if (!orderId) continue;
+
+          const payout = +(row[c_payout] || 0);
+          const feeRaw = c_totalFee >= 0 ? +(row[c_totalFee] || 0) : 0;
+          // Tổng phí trong file là số ÂM (vd -118.361) → đổi sang dương để lưu
+          const fee = Math.abs(feeRaw);
+
+          if (isNaN(payout)) continue;
+
+          let dateVal: Date | null = null;
+          if (c_dateSet >= 0 && row[c_dateSet]) {
+            const d = parseDate(row[c_dateSet]);
+            if (d) dateVal = d;
+          }
+
+          const cur = accMap.get(orderId) || { payout: 0, totalFee: 0, count: 0, lastDate: null as Date | null };
+          cur.payout += payout;
+          cur.totalFee += fee;
+          cur.count += 1;
+          if (dateVal && (!cur.lastDate || dateVal > cur.lastDate)) {
+            cur.lastDate = dateVal;
+          }
+          accMap.set(orderId, cur);
+        }
+      }
+
+      if (accMap.size === 0) {
+        setAlert({ type: 'error', text: 'Không có giao dịch hợp lệ trong file Ví TikTok' });
+        return;
+      }
+
+      // 1. Upsert vào bảng reconciliation (cho cột Sàn TT)
+      const reconPayload = Array.from(accMap.entries()).map(([orderId, a]) => ({
+        user_id: user.id,
+        order_id: orderId,
+        shopee_payout: a.payout,
+        transaction_count: a.count,
+        last_transaction_date: a.lastDate?.toISOString() || null,
+      }));
+
+      const BATCH = 500;
+      for (let i = 0; i < reconPayload.length; i += BATCH) {
+        const slice = reconPayload.slice(i, i + BATCH);
+        const { error } = await supabase
+          .from('reconciliation')
+          .upsert(slice, { onConflict: 'user_id,order_id', ignoreDuplicates: false });
+        if (error) throw error;
+      }
+
+      // 2. Update fee_fix của bảng orders cho các đơn TikTok này (cho cột Tổng phí)
+      //    Chỉ update đơn TikTok đang có trong DB; cộng vào dòng chính (total_paid cao nhất)
+      const tiktokOrdersByOid = new Map<string, Order[]>();
+      orders.filter(o => o.platform === 'tiktok').forEach(o => {
+        const arr = tiktokOrdersByOid.get(o.order_id) || [];
+        arr.push(o);
+        tiktokOrdersByOid.set(o.order_id, arr);
+      });
+
+      // Build list các orders cần update fee
+      const orderUpdates: { unique_key: string; fee_fix: number }[] = [];
+      let feeAppliedCount = 0;
+      accMap.forEach((acc, oid) => {
+        const lines = tiktokOrdersByOid.get(oid);
+        if (!lines || lines.length === 0) return;
+        // Tìm dòng chính (total_paid cao nhất)
+        let main = lines[0];
+        for (const l of lines) {
+          if ((l.total_paid || 0) > (main.total_paid || 0)) main = l;
+        }
+        orderUpdates.push({ unique_key: main.unique_key, fee_fix: acc.totalFee });
+        feeAppliedCount++;
+        // Các dòng phụ giữ fee = 0
+        lines.forEach(l => {
+          if (l.unique_key !== main.unique_key) {
+            orderUpdates.push({ unique_key: l.unique_key, fee_fix: 0 });
+          }
+        });
+      });
+
+      // Update từng dòng (Supabase không hỗ trợ bulk update by unique_key trực tiếp ngoài upsert)
+      // Dùng upsert với select dòng đầy đủ
+      if (orderUpdates.length > 0) {
+        // Fetch all matching orders, merge fee_fix, upsert
+        const keys = orderUpdates.map(u => u.unique_key);
+        const { data: existing } = await supabase
+          .from('orders').select('*').in('unique_key', keys);
+        if (existing) {
+          const feeMap = new Map(orderUpdates.map(u => [u.unique_key, u.fee_fix]));
+          const updated = existing.map(o => ({ ...o, fee_fix: feeMap.get(o.unique_key) ?? o.fee_fix }));
+          for (let i = 0; i < updated.length; i += BATCH) {
+            const slice = updated.slice(i, i + BATCH);
+            const { error } = await supabase
+              .from('orders')
+              .upsert(slice, { onConflict: 'user_id,unique_key', ignoreDuplicates: false });
+            if (error) throw error;
+          }
+        }
+      }
+
+      setAlert({
+        type: 'success',
+        text: `✓ Đã import Ví TikTok: ${accMap.size} đơn quyết toán • Cập nhật phí cho ${feeAppliedCount} đơn TikTok đã import`,
+      });
+
+      // Reload data
+      const [{ data: freshOrders }, { data: freshRecon }] = await Promise.all([
+        supabase.from('orders').select('*').order('date_order', { ascending: false }).limit(20000),
+        supabase.from('reconciliation').select('order_id,shopee_payout,has_adjustment'),
+      ]);
+      setOrders(freshOrders || []);
+      setReconciliation(freshRecon || []);
+      router.refresh();
+    } catch (err: any) {
+      setAlert({ type: 'error', text: 'Lỗi: ' + (err.message || err) });
+    } finally {
+      setImportingTiktokRecon(false);
+      if (tiktokReconFileRef.current) tiktokReconFileRef.current.value = '';
+    }
   };
 
   // ============ IMPORT (giữ nguyên + dedupe) ============
