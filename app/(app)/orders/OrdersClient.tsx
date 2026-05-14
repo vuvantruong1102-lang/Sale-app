@@ -136,8 +136,8 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       const isCancelled = st.text === 'Đã hủy';
       const isCompleted = st.text === 'Hoàn thành' || st.text === 'Đã nhận';
 
-      // Phát hiện đơn THHT (Trả hàng/Hoàn tiền):
-      // Trạng thái "Hoàn thành" + Shopee TT âm
+      // Phát hiện đơn THHT (Trả hàng/Hoàn tiền) cho CẢ SHOPEE & TIKTOK:
+      // Trạng thái "Hoàn thành"/"Đã hoàn tất" + Sàn TT âm
       const isReturned = isCompleted && hasPayout && payoutValue < 0;
 
       // ============ DOANH THU ============
@@ -458,7 +458,8 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       const mapStatus = (s: string): string => {
         const n = norm(s);
         if (n.includes('hủy') || n.includes('cancel')) return 'Đã hủy';
-        if (n.includes('hoàn thành') || n.includes('completed')) return 'Hoàn thành';
+        // TikTok dùng "Đã hoàn tất" cho đơn finalized
+        if (n.includes('hoàn tất') || n.includes('hoàn thành') || n.includes('completed')) return 'Hoàn thành';
         if (n.includes('đã giao') || n.includes('delivered')) return 'Đã giao';
         if (n.includes('đã vận chuyển') || n.includes('shipped') || n.includes('in transit')) return 'Đang giao';
         if (n.includes('cần vận chuyển') || n.includes('chờ vận chuyển') || n.includes('to ship') || n.includes('awaiting shipment')) return 'Chờ giao';
