@@ -3,16 +3,16 @@ import InvoicesClient from './InvoicesClient';
 
 export default async function InvoicesPage() {
   const supabase = createClient();
-  const [{ data: invoices }, { data: orders }, { data: settings }] = await Promise.all([
-    supabase.from('invoices').select('*').order('invoice_date', { ascending: false }),
-    supabase.from('orders').select('*').limit(20000),
-    supabase.from('settings').select('*').single(),
+  const [orders, misa, invStatus] = await Promise.all([
+    supabase.from('orders').select('*').order('date_order', { ascending: false }).limit(20000),
+    supabase.from('misa_orders').select('*'),
+    supabase.from('invoice_status').select('*'),
   ]);
   return (
     <InvoicesClient
-      initialInvoices={invoices || []}
-      orders={orders || []}
-      revRule={settings?.rev_rule || 'shipping'}
+      initialOrders={orders.data || []}
+      initialMisa={misa.data || []}
+      initialInvStatus={invStatus.data || []}
     />
   );
 }

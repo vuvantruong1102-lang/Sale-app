@@ -3,68 +3,249 @@
 import { useState, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
-import { Invoice, Order } from '@/lib/types';
+import { Order } from '@/lib/types';
 import { createClient } from '@/lib/supabase/client';
-import { fmt, fmtN, fmtDate, inRange, norm, findCol, parseDate, shortStatus, tagClass } from '@/lib/utils';
-import { Upload, RefreshCw } from 'lucide-react';
+import { fmt, fmtDate, norm, shortStatus, tagClass, parseDate, inRange } from '@/lib/utils';
+import { useResizableCols, ResizeHandle, ColDef } from '@/lib/useResizableCols';
+import {
+  Upload, Download, ChevronLeft, ChevronRight, Search, RotateCcw, AlertTriangle,
+} from 'lucide-react';
 
-type Props = {
-  initialInvoices: Invoice[];
-  orders: Order[];
-  revRule: string;
+const PAGE_SIZE = 50;
+
+type MisaOrder = {
+  order_id: string;
+  misa_order_no?: string;
+  misa_date?: string | null;
+  order_value?: number;
+  platform?: string;
+  customer?: string;
 };
 
-export default function InvoicesClient({ initialInvoices, orders: ordersProp, revRule }: Props) {
+type InvStatus = {
+  order_id: string;
+  invoice_no?: string;
+  invoice_date?: string | null;
+  invoice_value?: number;
+  invoice_status?: string;
+  invoice_type?: string;
+};
+
+const DEFAULT_COLS: ColDef[] = [
+  { key: 'date',          width: 120, minWidth: 90 },
+  { key: 'platform',      width: 80,  minWidth: 60 },
+  { key: 'orderId',       width: 140, minWidth: 100 },
+  { key: 'status',        width: 105, minWidth: 70 },
+  { key: 'product',       width: 280, minWidth: 120 },
+  { key: 'sku',           width: 95,  minWidth: 60 },
+  { key: 'quantity',      width: 70,  minWidth: 50 },
+  { key: 'price',         width: 100, minWidth: 80 },
+  { key: 'orderValue',    width: 110, minWidth: 80 },
+  { key: 'dateShip',      width: 120, minWidth: 90 },
+  { key: 'invoiceValue',  width: 120, minWidth: 90 },
+  { key: 'invoiceStatus', width: 130, minWidth: 100 },
+  { key: 'statusFinal',   width: 130, minWidth: 100 },
+  { key: 'warning',       width: 260, minWidth: 150 },
+];
+
+type Props = {
+  initialOrders: Order[];
+  initialMisa: MisaOrder[];
+  initialInvStatus: InvStatus[];
+};
+
+export default function InvoicesClient({ initialOrders, initialMisa, initialInvStatus }: Props) {
   const router = useRouter();
   const supabase = createClient();
-  const [invoices, setInvoices] = useState<Invoice[]>(initialInvoices);
-  const [orders, setOrders] = useState<Order[]>(ordersProp);
-  const [range, setRange] = useState('30days');
-  const [tab, setTab] = useState<'all' | 'missing'>('all');
-  const [importing, setImporting] = useState(false);
+  const [orders] = useState<Order[]>(initialOrders);
+  const [misa, setMisa] = useState<MisaOrder[]>(initialMisa);
+  const [invStatus, setInvStatus] = useState<InvStatus[]>(initialInvStatus);
+
+  const [dateRange, setDateRange] = useState('all');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [search, setSearch] = useState('');
+  const [filterMode, setFilterMode] = useState<'all' | 'shipped' | 'warning'>('all');
+  const [page, setPage] = useState(1);
+  const [importingMisa, setImportingMisa] = useState(false);
+  const [importingStatus, setImportingStatus] = useState(false);
   const [alert, setAlert] = useState<{ type: string; text: string } | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const misaFileRef = useRef<HTMLInputElement>(null);
+  const statusFileRef = useRef<HTMLInputElement>(null);
 
-  const filteredInv = useMemo(() => invoices.filter(i => inRange(i.invoice_date, range)), [invoices, range]);
+  const { cols, setWidth, reset } = useResizableCols('invoices-col-widths', DEFAULT_COLS);
+  const colW = (k: string) => cols.find(c => c.key === k)?.width || 100;
 
-  const orderIdsSet = useMemo(() => new Set(orders.map(o => o.order_id)), [orders]);
+  // Map order_id -> misa & invoice status
+  const misaMap = useMemo(() => {
+    const m = new Map<string, MisaOrder>();
+    misa.forEach(r => m.set(r.order_id, r));
+    return m;
+  }, [misa]);
 
+  const statusMap = useMemo(() => {
+    const m = new Map<string, InvStatus>();
+    invStatus.forEach(r => m.set(r.order_id, r));
+    return m;
+  }, [invStatus]);
+
+  // Tính trạng thái xuất HĐ + cảnh báo cho mỗi đơn
+  const rowsWithCalc = useMemo(() => {
+    // Group orders theo order_id, tính tổng giá trị đơn (vì 1 đơn có thể nhiều dòng SKU)
+    // Chỉ giữ dòng chính (total_paid cao nhất) để hiển thị, nhưng tổng giá trị tính tất cả
+    const grouped = new Map<string, Order[]>();
+    orders.forEach(o => {
+      const arr = grouped.get(o.order_id) || [];
+      arr.push(o);
+      grouped.set(o.order_id, arr);
+    });
+
+    const rows: any[] = [];
+    grouped.forEach((lines, oid) => {
+      // Dòng chính = total_paid cao nhất
+      let main = lines[0];
+      for (const l of lines) {
+        if ((l.total_paid || 0) > (main.total_paid || 0)) main = l;
+      }
+
+      // Tổng giá trị đơn = SUM của (price_deal × qty) - shop_voucher
+      // shop_voucher chỉ tính 1 lần ở cấp đơn (lấy từ dòng chính)
+      let totalQty = 0;
+      let sumPriceQty = 0;
+      lines.forEach(l => {
+        totalQty += l.quantity || 1;
+        sumPriceQty += (l.price_deal || 0) * (l.quantity || 1);
+      });
+      const orderValue = sumPriceQty - (main.shop_voucher || 0);
+
+      const st = shortStatus(main.status || '');
+      const hasShipped = !!main.date_ship;
+      const isCancelled = st.text === 'Đã hủy';
+
+      const misaRec = misaMap.get(oid);
+      const statusRec = statusMap.get(oid);
+
+      const invoiceValue = misaRec?.order_value ?? null;
+      const invoiceStatusText = statusRec?.invoice_status ?? null;
+
+      // ============ TÍNH "TRẠNG THÁI XUẤT HĐ" ============
+      // - "Đã xuất": có trong misa_orders
+      // - "Chưa xuất": chưa có
+      // - "Không cần": đơn chưa gửi hàng / đã hủy
+      let statusFinal: { text: string; color: string };
+      if (isCancelled) {
+        statusFinal = { text: 'Đơn đã hủy', color: 'gray' };
+      } else if (!hasShipped) {
+        statusFinal = { text: 'Chưa gửi hàng', color: 'gray' };
+      } else if (misaRec) {
+        statusFinal = { text: 'Đã xuất', color: 'green' };
+      } else {
+        statusFinal = { text: 'Chưa xuất HĐ', color: 'red' };
+      }
+
+      // ============ CẢNH BÁO ============
+      const warnings: string[] = [];
+
+      // Đơn đã gửi hàng nhưng chưa xuất HĐ
+      if (hasShipped && !isCancelled && !misaRec) {
+        warnings.push('Chưa xuất HĐ (đã gửi hàng)');
+      }
+
+      // Sai giá trị xuất HĐ
+      if (misaRec && Math.abs((invoiceValue || 0) - orderValue) > 0.5) {
+        warnings.push(`Giá trị HĐ sai: HĐ ${fmt(invoiceValue || 0)} ≠ ĐH ${fmt(orderValue)}`);
+      }
+
+      // Đơn đã hủy nhưng đã xuất HĐ
+      if (isCancelled && misaRec) {
+        warnings.push('Đơn hủy nhưng đã xuất HĐ — nên hủy HĐ');
+      }
+
+      // Đơn chưa gửi hàng nhưng đã xuất HĐ
+      if (!hasShipped && !isCancelled && misaRec) {
+        warnings.push('Chưa gửi hàng nhưng đã xuất HĐ');
+      }
+
+      // HĐ chưa phát hành / sai trạng thái
+      if (misaRec && statusRec) {
+        const s = norm(invoiceStatusText);
+        if (s.includes('hủy')) {
+          warnings.push('HĐ đã hủy');
+        } else if (!s.includes('đã phát hành') && !s.includes('gửi lên cqt') && !s.includes('gửi cqt')) {
+          // 'Hóa đơn mới' / 'Chưa phát hành' / khác
+          warnings.push(`HĐ chưa phát hành: ${invoiceStatusText}`);
+        }
+      } else if (misaRec && !statusRec) {
+        warnings.push('Chưa có dữ liệu trạng thái HĐ');
+      }
+
+      // Sai giá trị giữa file Hóa đơn và file MISA
+      if (statusRec && misaRec && Math.abs((statusRec.invoice_value || 0) - (invoiceValue || 0)) > 0.5) {
+        warnings.push(`Giá trị HĐ ≠ giữa 2 file MISA`);
+      }
+
+      rows.push({
+        o: main,
+        lines,
+        totalQty,
+        orderValue,
+        price: main.price_deal || 0,
+        dateShip: main.date_ship,
+        statusText: st.text,
+        statusColor: st.color,
+        invoiceValue,
+        invoiceStatusText,
+        statusFinal,
+        warnings,
+        misaRec,
+        statusRec,
+        hasShipped,
+        isCancelled,
+      });
+    });
+    return rows;
+  }, [orders, misaMap, statusMap]);
+
+  // Stats
   const stats = useMemo(() => {
-    let matched = 0, unmatched = 0, totalVal = 0;
-    filteredInv.forEach(i => {
-      totalVal += i.total_amount || 0;
-      if (i.order_id && orderIdsSet.has(i.order_id)) matched++; else unmatched++;
-    });
-    return { matched, unmatched, totalVal };
-  }, [filteredInv, orderIdsSet]);
+    const total = rowsWithCalc.length;
+    const issued = rowsWithCalc.filter(r => r.statusFinal.text === 'Đã xuất').length;
+    const missing = rowsWithCalc.filter(r => r.statusFinal.text === 'Chưa xuất HĐ').length;
+    const warnings = rowsWithCalc.filter(r => r.warnings.length > 0).length;
+    return { total, issued, missing, warnings };
+  }, [rowsWithCalc]);
 
-  // Đơn chưa xuất HĐ
-  const missing = useMemo(() => {
-    const valid = orders.filter(o => {
-      const s = norm(o.status);
-      if (revRule === 'completed') return s.includes('đã giao') || s.includes('hoàn thành') || s.includes('người mua xác nhận');
-      if (revRule === 'shipping') return !s.includes('đã hủy') && s !== '';
-      return !s.includes('đã hủy');
-    }).filter(o => !o.invoice_issued).filter(o => inRange(o.date_order, range));
+  // Filter
+  const filtered = useMemo(() => {
+    let list = rowsWithCalc;
 
-    const m = new Map<string, { orderId: string; platform: string; items: string[]; total: number; date: any; status: string }>();
-    valid.forEach(o => {
-      const c = m.get(o.order_id) || {
-        orderId: o.order_id, platform: o.platform, items: [], total: 0, date: o.date_order, status: o.status || '',
-      };
-      c.items.push(`${o.product_name} (${o.sku}) x${o.quantity}`);
-      c.total += o.total_paid || ((o.price_deal || 0) * (o.quantity || 1)) || 0;
-      m.set(o.order_id, c);
-    });
-    return Array.from(m.values());
-  }, [orders, revRule, range]);
+    if (dateRange !== 'all') {
+      list = list.filter(r => inRange(r.o.date_order, dateRange, dateFrom, dateTo));
+    }
 
-  const missValue = missing.reduce((s, m) => s + m.total, 0);
+    if (filterMode === 'shipped') {
+      list = list.filter(r => r.hasShipped && !r.isCancelled);
+    } else if (filterMode === 'warning') {
+      list = list.filter(r => r.warnings.length > 0);
+    }
 
-  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const q = norm(search);
+    if (q) {
+      list = list.filter(r =>
+        norm(r.o.order_id).includes(q) || norm(r.o.product_name).includes(q) || norm(r.o.sku).includes(q)
+      );
+    }
+    return list;
+  }, [rowsWithCalc, dateRange, dateFrom, dateTo, search, filterMode]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const pageRows = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  // ============ IMPORT FILE MISA (XUẤT HĐ) ============
+  const handleImportMisa = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
-    setImporting(true);
+    setImportingMisa(true);
     setAlert(null);
 
     try {
@@ -72,243 +253,391 @@ export default function InvoicesClient({ initialInvoices, orders: ordersProp, re
       if (!user) throw new Error('Chưa đăng nhập');
 
       const payload: any[] = [];
-      const ordersToUpdate: { order_id: string; invoice_no: string }[] = [];
       const toIso = (v: any) => { const d = parseDate(v); return d ? d.toISOString() : null; };
 
       for (const f of files) {
         const data = await f.arrayBuffer();
         const wb = XLSX.read(data, { type: 'array', cellDates: true });
         const sh = wb.Sheets[wb.SheetNames[0]];
-        const rows: any[] = XLSX.utils.sheet_to_json(sh, { defval: null, raw: false });
-        if (!rows.length) continue;
-        const headers = Object.keys(rows[0]);
-        const c_no = findCol(headers, 'Số HĐ', 'Số hóa đơn', 'Invoice No');
-        const c_order = findCol(headers, 'Mã đơn hàng', 'Order ID', 'Mã đơn');
-        const c_name = findCol(headers, 'Tên sản phẩm', 'Tên hàng hóa', 'Mặt hàng');
-        const c_qty = findCol(headers, 'Số lượng', 'Quantity', 'SL');
-        const c_price = findCol(headers, 'Đơn giá', 'Unit Price');
-        const c_total = findCol(headers, 'Thành tiền', 'Total', 'Giá trị');
-        const c_date = findCol(headers, 'Ngày xuất', 'Ngày HĐ', 'Invoice Date', 'Ngày');
+        const allRows: any[][] = XLSX.utils.sheet_to_json(sh, { header: 1, defval: null, raw: false });
 
-        for (const r of rows) {
-          const rec = {
+        // Tìm dòng header (chứa "Số đơn hàng từ hệ thống khác")
+        let headerRowIdx = -1;
+        for (let i = 0; i < Math.min(15, allRows.length); i++) {
+          const row = allRows[i] || [];
+          if (row.some(c => norm(c).includes('số đơn hàng từ hệ thống khác'))) {
+            headerRowIdx = i;
+            break;
+          }
+        }
+        if (headerRowIdx === -1) {
+          setAlert({ type: 'error', text: `File "${f.name}" không có cột "Số đơn hàng từ hệ thống khác"` });
+          continue;
+        }
+        const headers = (allRows[headerRowIdx] || []).map((h: any) => String(h ?? '').trim());
+        const idx = (key: string) => headers.findIndex(h => norm(h) === norm(key));
+        const c_date = idx('Ngày đơn hàng');
+        const c_misaNo = idx('Số đơn hàng');
+        const c_platform = idx('Sàn thương mại điện tử');
+        const c_orderId = idx('Số đơn hàng từ hệ thống khác');
+        const c_ghi = idx('Tình trạng ghi doanh số');
+        const c_customer = idx('Khách hàng');
+        const c_value = idx('Giá trị đơn hàng');
+
+        if (c_orderId === -1 || c_value === -1) {
+          setAlert({ type: 'error', text: `File "${f.name}" thiếu cột cần thiết` });
+          continue;
+        }
+
+        for (let i = headerRowIdx + 1; i < allRows.length; i++) {
+          const row = allRows[i] || [];
+          const orderId = String(row[c_orderId] ?? '').trim();
+          if (!orderId) continue;
+          payload.push({
             user_id: user.id,
-            invoice_no: c_no ? String(r[c_no] ?? '').trim() : '',
-            order_id: c_order ? String(r[c_order] ?? '').trim() : '',
-            product_name: c_name ? String(r[c_name] ?? '').trim() : '',
-            quantity: c_qty ? +r[c_qty] || 0 : 0,
-            unit_price: c_price ? +r[c_price] || 0 : 0,
-            total_amount: c_total ? +r[c_total] || 0 : 0,
-            invoice_date: c_date ? toIso(r[c_date]) : null,
-          };
-          if (!rec.invoice_no && !rec.order_id) continue;
-          payload.push(rec);
-          if (rec.order_id) ordersToUpdate.push({ order_id: rec.order_id, invoice_no: rec.invoice_no });
+            order_id: orderId,
+            misa_order_no: c_misaNo >= 0 ? String(row[c_misaNo] ?? '').trim() : '',
+            misa_date: c_date >= 0 ? toIso(row[c_date]) : null,
+            platform: c_platform >= 0 ? String(row[c_platform] ?? '').trim() : '',
+            customer: c_customer >= 0 ? String(row[c_customer] ?? '').trim() : '',
+            order_value: +(row[c_value] || 0),
+            ghi_doanh_so: c_ghi >= 0 ? String(row[c_ghi] ?? '').trim() : '',
+          });
         }
       }
 
-      // Insert hóa đơn
+      if (payload.length === 0) {
+        setAlert({ type: 'error', text: 'Không có dữ liệu hợp lệ trong file' });
+        return;
+      }
+
       const BATCH = 500;
       for (let i = 0; i < payload.length; i += BATCH) {
         const slice = payload.slice(i, i + BATCH);
-        const { error } = await supabase.from('invoices').insert(slice);
+        const { error } = await supabase
+          .from('misa_orders')
+          .upsert(slice, { onConflict: 'user_id,order_id', ignoreDuplicates: false });
         if (error) throw error;
       }
 
-      // Đánh dấu các đơn đã có HĐ
-      let matched = 0;
-      for (const u of ordersToUpdate) {
-        const { error, count } = await supabase
-          .from('orders')
-          .update({ invoice_issued: true, invoice_no: u.invoice_no }, { count: 'exact' })
-          .eq('order_id', u.order_id);
-        if (!error && count) matched += count;
-      }
+      setAlert({ type: 'success', text: `✓ Đã import ${payload.length} đơn xuất HĐ từ MISA` });
 
-      setAlert({ type: 'success', text: `✓ Đã import ${payload.length} dòng HĐ, đối chiếu khớp ${matched} đơn` });
-
-      const [{ data: inv }, { data: ords }] = await Promise.all([
-        supabase.from('invoices').select('*').order('invoice_date', { ascending: false }),
-        supabase.from('orders').select('*').limit(20000),
-      ]);
-      setInvoices(inv || []);
-      setOrders(ords || []);
+      const { data: fresh } = await supabase.from('misa_orders').select('*');
+      setMisa(fresh || []);
       router.refresh();
     } catch (err: any) {
       setAlert({ type: 'error', text: 'Lỗi: ' + (err.message || err) });
     } finally {
-      setImporting(false);
-      if (fileRef.current) fileRef.current.value = '';
+      setImportingMisa(false);
+      if (misaFileRef.current) misaFileRef.current.value = '';
     }
   };
 
-  const markInvoiced = async (orderId: string) => {
-    const { error } = await supabase
-      .from('orders')
-      .update({ invoice_issued: true })
-      .eq('order_id', orderId);
-    if (error) { window.alert(error.message); return; }
-    const { data } = await supabase.from('orders').select('*').limit(20000);
-    setOrders(data || []);
-    router.refresh();
+  // ============ IMPORT FILE TRẠNG THÁI HĐ ============
+  const handleImportStatus = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setImportingStatus(true);
+    setAlert(null);
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Chưa đăng nhập');
+
+      const payload: any[] = [];
+      const toIso = (v: any) => { const d = parseDate(v); return d ? d.toISOString() : null; };
+
+      for (const f of files) {
+        const data = await f.arrayBuffer();
+        const wb = XLSX.read(data, { type: 'array', cellDates: true });
+        const sh = wb.Sheets[wb.SheetNames[0]];
+        const allRows: any[][] = XLSX.utils.sheet_to_json(sh, { header: 1, defval: null, raw: false });
+
+        // Tìm dòng header (chứa "Số đơn hàng từ hệ thống khác")
+        let headerRowIdx = -1;
+        for (let i = 0; i < Math.min(15, allRows.length); i++) {
+          const row = allRows[i] || [];
+          if (row.some(c => norm(c).includes('số đơn hàng từ hệ thống khác'))) {
+            headerRowIdx = i;
+            break;
+          }
+        }
+        if (headerRowIdx === -1) {
+          setAlert({ type: 'error', text: `File "${f.name}" không có cột "Số đơn hàng từ hệ thống khác"` });
+          continue;
+        }
+        const headers = (allRows[headerRowIdx] || []).map((h: any) => String(h ?? '').trim());
+        const idx = (key: string) => headers.findIndex(h => norm(h) === norm(key));
+        const c_date = idx('Ngày hóa đơn');
+        const c_no = idx('Số hóa đơn');
+        const c_value = idx('Giá trị hóa đơn');
+        const c_platform = idx('Sàn thương mại điện tử');
+        const c_orderId = idx('Số đơn hàng từ hệ thống khác');
+        const c_type = idx('Loại');
+        const c_status = idx('Trạng thái hóa đơn');
+
+        if (c_orderId === -1 || c_status === -1) {
+          setAlert({ type: 'error', text: `File "${f.name}" thiếu cột cần thiết` });
+          continue;
+        }
+
+        for (let i = headerRowIdx + 1; i < allRows.length; i++) {
+          const row = allRows[i] || [];
+          const orderId = String(row[c_orderId] ?? '').trim();
+          if (!orderId) continue;
+          payload.push({
+            user_id: user.id,
+            order_id: orderId,
+            invoice_no: c_no >= 0 ? String(row[c_no] ?? '').trim() : '',
+            invoice_date: c_date >= 0 ? toIso(row[c_date]) : null,
+            invoice_value: c_value >= 0 ? +(row[c_value] || 0) : 0,
+            platform: c_platform >= 0 ? String(row[c_platform] ?? '').trim() : '',
+            invoice_type: c_type >= 0 ? String(row[c_type] ?? '').trim() : '',
+            invoice_status: String(row[c_status] ?? '').trim(),
+          });
+        }
+      }
+
+      if (payload.length === 0) {
+        setAlert({ type: 'error', text: 'Không có dữ liệu hợp lệ trong file' });
+        return;
+      }
+
+      const BATCH = 500;
+      for (let i = 0; i < payload.length; i += BATCH) {
+        const slice = payload.slice(i, i + BATCH);
+        const { error } = await supabase
+          .from('invoice_status')
+          .upsert(slice, { onConflict: 'user_id,order_id', ignoreDuplicates: false });
+        if (error) throw error;
+      }
+
+      setAlert({ type: 'success', text: `✓ Đã import ${payload.length} trạng thái HĐ` });
+
+      const { data: fresh } = await supabase.from('invoice_status').select('*');
+      setInvStatus(fresh || []);
+      router.refresh();
+    } catch (err: any) {
+      setAlert({ type: 'error', text: 'Lỗi: ' + (err.message || err) });
+    } finally {
+      setImportingStatus(false);
+      if (statusFileRef.current) statusFileRef.current.value = '';
+    }
   };
 
-  const reconcile = async () => {
-    let matched = 0;
-    for (const i of invoices) {
-      if (!i.order_id) continue;
-      const { count } = await supabase
-        .from('orders')
-        .update({ invoice_issued: true, invoice_no: i.invoice_no }, { count: 'exact' })
-        .eq('order_id', i.order_id);
-      if (count) matched++;
-    }
-    setAlert({ type: 'success', text: `✓ Đối chiếu: ${matched} HĐ khớp đơn` });
-    const { data } = await supabase.from('orders').select('*').limit(20000);
-    setOrders(data || []);
-    router.refresh();
+  const handleExport = () => {
+    if (!filtered.length) { window.alert('Không có dữ liệu'); return; }
+    const rows = filtered.map(r => ({
+      'Ngày đặt': r.o.date_order,
+      'Sàn': r.o.platform,
+      'Mã đơn': r.o.order_id,
+      'Trạng thái': r.o.status,
+      'Sản phẩm': r.o.product_name,
+      'SKU': r.o.sku,
+      'Số lượng': r.totalQty,
+      'Giá bán': r.price,
+      'Giá trị ĐH': r.orderValue,
+      'Ngày gửi hàng': r.dateShip || '',
+      'Giá trị xuất HĐ': r.invoiceValue ?? '',
+      'Trạng thái HĐ': r.invoiceStatusText || '',
+      'Trạng thái xuất HĐ': r.statusFinal.text,
+      'Cảnh báo': r.warnings.join('; '),
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Hóa đơn');
+    XLSX.writeFile(wb, 'hoa-don-' + Date.now() + '.xlsx');
   };
 
   return (
     <div className="fade-in">
-      <h1 className="text-2xl font-bold mb-1">Hóa đơn điện tử</h1>
-      <p className="text-sm text-gray-500 mb-5">Import HĐ đã xuất — đối chiếu với đơn hàng để phát hiện đơn còn sót chưa gửi cơ quan thuế</p>
+      <h1 className="text-2xl font-bold mb-1">Hóa đơn</h1>
+      <p className="text-sm text-gray-500 mb-5">
+        Kiểm tra MISA đã xuất HĐ đúng và đầy đủ chưa — đơn đã gửi hàng phải có HĐ với giá trị đúng
+      </p>
 
       <div className="flex flex-wrap gap-3 mb-4 items-center">
-        <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" multiple className="hidden" onChange={handleImport} />
-        <button className="btn btn-primary" disabled={importing} onClick={() => fileRef.current?.click()}>
-          <Upload size={15} /> {importing ? 'Đang import...' : 'Import file HĐ'}
+        <input ref={misaFileRef} type="file" accept=".xlsx,.xls,.csv" multiple className="hidden" onChange={handleImportMisa} />
+        <button className="btn btn-primary" disabled={importingMisa} onClick={() => misaFileRef.current?.click()}>
+          <Upload size={15} /> {importingMisa ? 'Đang import...' : 'Import file Xuất HĐ (MISA)'}
         </button>
-        <select className="input" value={range} onChange={e => setRange(e.target.value)}>
-          <option value="all">Tất cả</option>
+
+        <input ref={statusFileRef} type="file" accept=".xlsx,.xls,.csv" multiple className="hidden" onChange={handleImportStatus} />
+        <button
+          className="btn"
+          style={{ background: '#8b5cf6', color: 'white' }}
+          disabled={importingStatus}
+          onClick={() => statusFileRef.current?.click()}
+        >
+          <Upload size={15} /> {importingStatus ? 'Đang import...' : 'Import file Trạng thái HĐ'}
+        </button>
+
+        <select className="input" value={dateRange} onChange={e => { setDateRange(e.target.value); setPage(1); }}>
+          <option value="all">Tất cả thời gian</option>
+          <option value="today">Hôm nay</option>
           <option value="7days">7 ngày qua</option>
           <option value="30days">30 ngày qua</option>
           <option value="month">Tháng này</option>
+          <option value="year">Năm này</option>
+          <option value="custom">Tùy chọn...</option>
         </select>
-        <button className="btn btn-secondary" onClick={reconcile}>
-          <RefreshCw size={14} /> Đối chiếu lại
+        {dateRange === 'custom' && (
+          <>
+            <input type="date" className="input" value={dateFrom} onChange={e => { setDateFrom(e.target.value); setPage(1); }} />
+            <span className="text-gray-400 text-sm">đến</span>
+            <input type="date" className="input" value={dateTo} onChange={e => { setDateTo(e.target.value); setPage(1); }} />
+          </>
+        )}
+
+        <div className="relative">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input className="input pl-8 w-56" placeholder="Tìm mã đơn, SP, SKU..." value={search}
+            onChange={e => { setSearch(e.target.value); setPage(1); }} />
+        </div>
+        <button className="btn btn-secondary btn-sm" onClick={handleExport}>
+          <Download size={14} /> Xuất Excel
+        </button>
+        <button className="btn btn-secondary btn-sm" onClick={reset}>
+          <RotateCcw size={13} /> Reset cột
         </button>
       </div>
 
       {alert && (
         <div className={`mb-4 px-4 py-3 rounded-md text-sm ${
           alert.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' :
-          'bg-red-50 text-red-700 border border-red-200'
+          alert.type === 'error' ? 'bg-red-50 text-red-700 border border-red-200' :
+          'bg-blue-50 text-blue-700 border border-blue-200'
         }`}>{alert.text}</div>
       )}
 
-      <div className="flex gap-1 border-b border-gray-200 mb-5">
-        <button onClick={() => setTab('all')}
-          className={`px-4 py-2.5 text-sm font-medium border-b-2 transition ${
-            tab === 'all' ? 'border-brand-500 text-brand-600' : 'border-transparent text-gray-500 hover:text-gray-900'
-          }`}>
-          Hóa đơn đã xuất ({invoices.length})
+      {/* KPI cards / filter pills */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+        <button
+          onClick={() => { setFilterMode('all'); setPage(1); }}
+          className={`card text-left transition cursor-pointer ${filterMode === 'all' ? 'ring-2 ring-brand-500' : 'hover:bg-gray-50'}`}
+        >
+          <div className="text-xs text-gray-500 uppercase tracking-wider">Tổng đơn</div>
+          <div className="text-2xl font-bold mt-1">{stats.total}</div>
         </button>
-        <button onClick={() => setTab('missing')}
-          className={`px-4 py-2.5 text-sm font-medium border-b-2 transition ${
-            tab === 'missing' ? 'border-brand-500 text-brand-600' : 'border-transparent text-gray-500 hover:text-gray-900'
-          }`}>
-          Đơn chưa xuất HĐ ({missing.length})
+        <button
+          onClick={() => { setFilterMode('shipped'); setPage(1); }}
+          className={`card text-left transition cursor-pointer ${filterMode === 'shipped' ? 'ring-2 ring-brand-500' : 'hover:bg-gray-50'}`}
+        >
+          <div className="text-xs text-gray-500 uppercase tracking-wider">Đã xuất HĐ</div>
+          <div className="text-2xl font-bold mt-1 text-green-600">{stats.issued}</div>
+        </button>
+        <button
+          onClick={() => { setFilterMode('warning'); setPage(1); }}
+          className={`card text-left transition cursor-pointer ${filterMode === 'warning' ? 'ring-2 ring-brand-500' : 'hover:bg-gray-50'}`}
+        >
+          <div className="text-xs text-gray-500 uppercase tracking-wider">Chưa xuất HĐ</div>
+          <div className="text-2xl font-bold mt-1 text-red-600">{stats.missing}</div>
+        </button>
+        <button
+          onClick={() => { setFilterMode('warning'); setPage(1); }}
+          className={`card text-left transition cursor-pointer ${filterMode === 'warning' ? 'ring-2 ring-brand-500' : 'hover:bg-gray-50'}`}
+        >
+          <div className="text-xs text-gray-500 uppercase tracking-wider flex items-center gap-1">
+            <AlertTriangle size={12} /> Cảnh báo
+          </div>
+          <div className="text-2xl font-bold mt-1 text-yellow-600">{stats.warnings}</div>
         </button>
       </div>
 
-      {tab === 'all' && (
-        <>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
-            <KPI title="Tổng số HĐ" value={fmtN(filteredInv.length)} />
-            <KPI title="Tổng giá trị" value={fmt(stats.totalVal)} />
-            <KPI title="Khớp đơn hàng" value={fmtN(stats.matched)} color="text-green-600" />
-            <KPI title="Không khớp" value={fmtN(stats.unmatched)} color="text-red-600" />
-          </div>
+      <div className="card !p-0 overflow-x-auto">
+        <table className="tbl orders-tbl" style={{ width: cols.reduce((s, c) => s + c.width, 0) }}>
+          <colgroup>
+            {cols.map(c => <col key={c.key} style={{ width: c.width }} />)}
+          </colgroup>
+          <thead><tr>
+            <th>Ngày đặt<ResizeHandle currentWidth={colW('date')} onResize={w => setWidth('date', w)} /></th>
+            <th>Sàn<ResizeHandle currentWidth={colW('platform')} onResize={w => setWidth('platform', w)} /></th>
+            <th>Mã đơn<ResizeHandle currentWidth={colW('orderId')} onResize={w => setWidth('orderId', w)} /></th>
+            <th>Trạng thái<ResizeHandle currentWidth={colW('status')} onResize={w => setWidth('status', w)} /></th>
+            <th>Sản phẩm<ResizeHandle currentWidth={colW('product')} onResize={w => setWidth('product', w)} /></th>
+            <th>SKU<ResizeHandle currentWidth={colW('sku')} onResize={w => setWidth('sku', w)} /></th>
+            <th className="text-right">SL<ResizeHandle currentWidth={colW('quantity')} onResize={w => setWidth('quantity', w)} /></th>
+            <th className="text-right">Giá bán<ResizeHandle currentWidth={colW('price')} onResize={w => setWidth('price', w)} /></th>
+            <th className="text-right">Giá trị ĐH<ResizeHandle currentWidth={colW('orderValue')} onResize={w => setWidth('orderValue', w)} /></th>
+            <th>Ngày gửi<ResizeHandle currentWidth={colW('dateShip')} onResize={w => setWidth('dateShip', w)} /></th>
+            <th className="text-right">Giá trị xuất HĐ<ResizeHandle currentWidth={colW('invoiceValue')} onResize={w => setWidth('invoiceValue', w)} /></th>
+            <th>Trạng thái HĐ<ResizeHandle currentWidth={colW('invoiceStatus')} onResize={w => setWidth('invoiceStatus', w)} /></th>
+            <th>Trạng thái xuất HĐ<ResizeHandle currentWidth={colW('statusFinal')} onResize={w => setWidth('statusFinal', w)} /></th>
+            <th>Cảnh báo</th>
+          </tr></thead>
+          <tbody>
+            {pageRows.length === 0 && (
+              <tr><td colSpan={14} className="text-center text-gray-400 py-12">
+                Không có dữ liệu
+              </td></tr>
+            )}
+            {pageRows.map(r => {
+              const o = r.o;
+              return (
+                <tr key={o.unique_key} className={r.warnings.length > 0 ? 'bg-yellow-50/50' : ''}>
+                  <td className="text-xs">{fmtDate(o.date_order)}</td>
+                  <td><span className={`tag ${tagClass(o.platform)}`}>{o.platform === 'shopee' ? 'Shopee' : 'TikTok'}</span></td>
+                  <td className="font-medium text-xs">{o.order_id}</td>
+                  <td><span className={`tag ${tagClass(r.statusColor)}`}>{r.statusText}</span></td>
+                  <td>
+                    <div className="truncate" title={o.product_name}>{o.product_name || '-'}</div>
+                  </td>
+                  <td className="text-xs">{o.sku || '-'}</td>
+                  <td className="text-right">{r.totalQty}</td>
+                  <td className="text-right">{fmt(r.price)}</td>
+                  <td className="text-right font-medium">{fmt(r.orderValue)}</td>
+                  <td className="text-xs">{r.dateShip ? fmtDate(r.dateShip) : <span className="text-gray-300">—</span>}</td>
+                  <td className="text-right">
+                    {r.invoiceValue !== null
+                      ? <span className={`font-medium ${Math.abs(r.invoiceValue - r.orderValue) > 0.5 ? 'text-red-600' : ''}`}>{fmt(r.invoiceValue)}</span>
+                      : <span className="text-gray-300">—</span>}
+                  </td>
+                  <td>
+                    {r.invoiceStatusText
+                      ? <span className={`tag ${
+                          norm(r.invoiceStatusText).includes('đã phát hành') || norm(r.invoiceStatusText).includes('cqt')
+                            ? 'bg-green-100 text-green-700'
+                            : norm(r.invoiceStatusText).includes('hủy')
+                            ? 'bg-red-100 text-red-700'
+                            : 'bg-yellow-100 text-yellow-700'
+                        }`}>{r.invoiceStatusText}</span>
+                      : <span className="text-gray-300">—</span>}
+                  </td>
+                  <td>
+                    <span className={`tag ${tagClass(r.statusFinal.color)}`}>{r.statusFinal.text}</span>
+                  </td>
+                  <td>
+                    {r.warnings.length === 0
+                      ? <span className="text-gray-300">—</span>
+                      : (
+                        <div className="flex flex-col gap-0.5">
+                          {r.warnings.map((w: string, i: number) => (
+                            <span key={i} className="text-xs text-red-600 flex items-start gap-1">
+                              <AlertTriangle size={11} className="mt-0.5 flex-shrink-0" /> {w}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
 
-          <div className="card !p-0 overflow-x-auto">
-            <table className="tbl">
-              <thead><tr>
-                <th>Số HĐ</th><th>Mã đơn</th><th>Tên SP</th>
-                <th className="text-right">SL</th><th className="text-right">Đơn giá</th>
-                <th className="text-right">Thành tiền</th><th>Ngày xuất</th><th>Khớp</th>
-              </tr></thead>
-              <tbody>
-                {filteredInv.length === 0 && (
-                  <tr><td colSpan={8} className="text-center text-gray-400 py-12">Chưa có HĐ — hãy import file</td></tr>
-                )}
-                {filteredInv.slice(0, 500).map((i, idx) => {
-                  const ok = i.order_id && orderIdsSet.has(i.order_id);
-                  return (
-                    <tr key={idx}>
-                      <td className="font-medium">{i.invoice_no || '-'}</td>
-                      <td>{i.order_id || '-'}</td>
-                      <td><div className="max-w-[260px] truncate" title={i.product_name}>{i.product_name || '-'}</div></td>
-                      <td className="text-right">{i.quantity}</td>
-                      <td className="text-right">{fmt(i.unit_price)}</td>
-                      <td className="text-right font-medium">{fmt(i.total_amount)}</td>
-                      <td className="text-xs">{fmtDate(i.invoice_date)}</td>
-                      <td>{ok
-                        ? <span className="tag bg-green-100 text-green-700">Khớp</span>
-                        : <span className="tag bg-red-100 text-red-700">Không khớp</span>}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
-
-      {tab === 'missing' && (
-        <>
-          <div className="bg-yellow-50 border border-yellow-200 text-yellow-700 px-4 py-3 rounded-md text-sm mb-4">
-            <strong>⚠ Đơn hàng chưa xuất hóa đơn</strong> — cần kiểm tra để xuất kịp gửi cơ quan thuế
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
-            <KPI title="Đơn chưa xuất HĐ" value={fmtN(missing.length)} color="text-red-600" />
-            <KPI title="Tổng giá trị" value={fmt(missValue)} />
-          </div>
-
-          <div className="card !p-0 overflow-x-auto">
-            <table className="tbl">
-              <thead><tr>
-                <th>Mã đơn</th><th>Sàn</th><th>Sản phẩm</th>
-                <th className="text-right">SL items</th><th className="text-right">Thành tiền</th>
-                <th>Ngày đặt</th><th>Trạng thái</th><th></th>
-              </tr></thead>
-              <tbody>
-                {missing.length === 0 && (
-                  <tr><td colSpan={8} className="text-center text-gray-400 py-12">Tất cả đơn đã xuất hóa đơn 👍</td></tr>
-                )}
-                {missing.slice(0, 500).map(m => {
-                  const st = shortStatus(m.status);
-                  return (
-                    <tr key={m.orderId}>
-                      <td className="font-medium">{m.orderId}</td>
-                      <td><span className={`tag ${tagClass(m.platform)}`}>{m.platform === 'shopee' ? 'Shopee' : 'TikTok'}</span></td>
-                      <td><div className="max-w-[340px] truncate" title={m.items.join('; ')}>{m.items.join('; ')}</div></td>
-                      <td className="text-right">{m.items.length}</td>
-                      <td className="text-right font-medium">{fmt(m.total)}</td>
-                      <td className="text-xs">{fmtDate(m.date)}</td>
-                      <td><span className={`tag ${tagClass(st.color)}`}>{st.text}</span></td>
-                      <td>
-                        <button className="btn btn-secondary btn-sm" onClick={() => markInvoiced(m.orderId)}>
-                          Đánh dấu đã xuất
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-function KPI({ title, value, color }: { title: string; value: string; color?: string }) {
-  return (
-    <div className="card">
-      <div className="text-xs text-gray-500 uppercase tracking-wider font-medium">{title}</div>
-      <div className={`text-2xl font-bold mt-1 ${color || ''}`}>{value}</div>
+      <div className="flex items-center justify-between mt-4">
+        <div className="text-sm text-gray-500">{filtered.length.toLocaleString('vi-VN')} đơn</div>
+        <div className="flex items-center gap-2">
+          <button className="btn btn-secondary btn-sm" disabled={page === 1} onClick={() => setPage(p => Math.max(1, p - 1))}>
+            <ChevronLeft size={14} /> Trước
+          </button>
+          <span className="text-sm text-gray-500">Trang {page}/{totalPages}</span>
+          <button className="btn btn-secondary btn-sm" disabled={page >= totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))}>
+            Sau <ChevronRight size={14} />
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
