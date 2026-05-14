@@ -112,7 +112,6 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       const quantity = o.quantity || 1;
       const orderValue = price * quantity;
       const totalFee = (o.fee_fix || 0) + (o.fee_service || 0) + (o.fee_payment || 0);
-      const cogs = (costMap.get(o.sku || '') || 0) * quantity;
       const st = shortStatus(o.status || '');
 
       // Shopee TT chỉ hiển thị ở dòng chính, payoutMap.has = có dữ liệu đối soát
@@ -120,20 +119,23 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       const hasPayout = payoutMap.has(o.order_id);
       const shopeePayout = isMainRow && hasPayout ? (payoutMap.get(o.order_id) || 0) : null;
 
+      const isCancelled = st.text === 'Đã hủy';
+
       // Doanh thu:
       // - Đơn 'Đã hủy': mặc định 0, nếu có file đối soát thì = Shopee TT (có thể âm/dương)
       // - Đơn khác: = orderValue - totalFee
-      const isCancelled = st.text === 'Đã hủy';
       let revenue: number;
       if (isCancelled) {
         revenue = hasPayout && isMainRow ? (payoutMap.get(o.order_id) || 0) : 0;
-        // Dòng phụ của đơn hủy → 0 (vì payout đã được tính ở dòng chính rồi)
         if (!isMainRow) revenue = 0;
       } else {
         revenue = orderValue - totalFee;
       }
 
-      const profit = revenue - cogs;
+      // Giá vốn HB & Lợi nhuận: đơn hủy = 0 (không tính); đơn khác = bình thường
+      const cogs = isCancelled ? 0 : (costMap.get(o.sku || '') || 0) * quantity;
+      const profit = isCancelled ? 0 : revenue - cogs;
+
       const diff = shopeePayout !== null ? shopeePayout - revenue : null;
 
       return {
@@ -697,9 +699,9 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
                       </span>
                     ) : <span className="text-gray-300">—</span>}
                   </td>
-                  <td className="text-right">{r.cogs > 0 ? fmt(r.cogs) : <span className="text-gray-300">—</span>}</td>
+                  <td className="text-right">{r.isCancelled || r.cogs === 0 ? <span className="text-gray-300">—</span> : fmt(r.cogs)}</td>
                   <td className={`text-right font-medium ${r.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                    {r.cogs > 0 ? fmt(r.profit) : <span className="text-gray-300">—</span>}
+                    {r.isCancelled || r.cogs === 0 ? <span className="text-gray-300">—</span> : fmt(r.profit)}
                   </td>
                 </tr>
               );
