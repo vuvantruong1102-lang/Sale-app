@@ -18,6 +18,8 @@ type MisaOrder = {
   misa_order_no?: string;
   misa_date?: string | null;
   order_value?: number;
+  invoice_export_value?: number;  // Giá trị đã xuất HĐ (cột I)
+  export_status?: string;          // Tình trạng xuất HĐ (cột L)
   platform?: string;
   customer?: string;
 };
@@ -27,25 +29,26 @@ type InvStatus = {
   invoice_no?: string;
   invoice_date?: string | null;
   invoice_value?: number;
-  invoice_status?: string;
+  invoice_status?: string;         // Cột H trong file (giữ để tham khảo)
+  release_status?: string;         // TT phát hành HĐ (cột K)
   invoice_type?: string;
 };
 
 const DEFAULT_COLS: ColDef[] = [
-  { key: 'date',          width: 120, minWidth: 90 },
-  { key: 'platform',      width: 80,  minWidth: 60 },
-  { key: 'orderId',       width: 140, minWidth: 100 },
-  { key: 'status',        width: 105, minWidth: 70 },
-  { key: 'product',       width: 280, minWidth: 120 },
-  { key: 'sku',           width: 95,  minWidth: 60 },
-  { key: 'quantity',      width: 70,  minWidth: 50 },
-  { key: 'price',         width: 100, minWidth: 80 },
-  { key: 'orderValue',    width: 110, minWidth: 80 },
-  { key: 'dateShip',      width: 120, minWidth: 90 },
-  { key: 'invoiceValue',  width: 120, minWidth: 90 },
-  { key: 'invoiceStatus', width: 130, minWidth: 100 },
-  { key: 'statusFinal',   width: 130, minWidth: 100 },
-  { key: 'warning',       width: 260, minWidth: 150 },
+  { key: 'date',           width: 120, minWidth: 90 },
+  { key: 'platform',       width: 80,  minWidth: 60 },
+  { key: 'orderId',        width: 140, minWidth: 100 },
+  { key: 'status',         width: 105, minWidth: 70 },
+  { key: 'product',        width: 280, minWidth: 120 },
+  { key: 'sku',            width: 95,  minWidth: 60 },
+  { key: 'quantity',       width: 70,  minWidth: 50 },
+  { key: 'price',          width: 100, minWidth: 80 },
+  { key: 'orderValue',     width: 110, minWidth: 80 },
+  { key: 'dateShip',       width: 120, minWidth: 90 },
+  { key: 'invoiceValue',   width: 120, minWidth: 90 },
+  { key: 'exportStatus',   width: 140, minWidth: 110 },  // Trạng thái xuất HĐ (đổi vị trí lên trước)
+  { key: 'releaseStatus',  width: 140, minWidth: 110 },  // TT phát hành HĐ (đổi vị trí xuống sau)
+  { key: 'warning',        width: 260, minWidth: 150 },
 ];
 
 type Props = {
@@ -125,18 +128,24 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       const misaRec = misaMap.get(oid);
       const statusRec = statusMap.get(oid);
 
-      const invoiceValue = misaRec?.order_value ?? null;
-      const invoiceStatusText = statusRec?.invoice_status ?? null;
+      // Giá trị xuất HĐ = cột I "Giá trị đã xuất hóa đơn" (không phải cột H "Giá trị đơn hàng")
+      const invoiceValue = misaRec?.invoice_export_value ?? null;
+      // Trạng thái xuất HĐ = cột L "Tình trạng xuất hóa đơn" trong file MISA
+      const exportStatusText = misaRec?.export_status ?? null;
+      // TT phát hành HĐ = cột K "TT phát hành hóa đơn" trong file Hoa_don
+      const releaseStatusText = statusRec?.release_status ?? null;
 
-      // ============ TÍNH "TRẠNG THÁI XUẤT HĐ" ============
-      // - "Đã xuất": có trong misa_orders
-      // - "Chưa xuất": chưa có
-      // - "Không cần": đơn chưa gửi hàng / đã hủy
+      // ============ TÍNH "TRẠNG THÁI XUẤT HĐ" (cột visible) ============
+      // Ưu tiên dùng giá trị từ file MISA cột L nếu có, ngược lại dùng logic suy ra
       let statusFinal: { text: string; color: string };
       if (isCancelled) {
         statusFinal = { text: 'Đơn đã hủy', color: 'gray' };
       } else if (!hasShipped) {
         statusFinal = { text: 'Chưa gửi hàng', color: 'gray' };
+      } else if (exportStatusText) {
+        const s = norm(exportStatusText);
+        const color = s.includes('đã xuất') ? 'green' : (s.includes('chưa xuất') ? 'red' : 'yellow');
+        statusFinal = { text: exportStatusText, color };
       } else if (misaRec) {
         statusFinal = { text: 'Đã xuất', color: 'green' };
       } else {
@@ -151,37 +160,44 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         warnings.push('Chưa xuất HĐ (đã gửi hàng)');
       }
 
-      // Sai giá trị xuất HĐ
-      if (misaRec && Math.abs((invoiceValue || 0) - orderValue) > 0.5) {
-        warnings.push(`Giá trị HĐ sai: HĐ ${fmt(invoiceValue || 0)} ≠ ĐH ${fmt(orderValue)}`);
+      // Sai giá trị xuất HĐ (so sánh với Giá trị ĐH)
+      if (misaRec && invoiceValue !== null && Math.abs(invoiceValue - orderValue) > 0.5) {
+        warnings.push(`Giá trị HĐ sai: HĐ ${fmt(invoiceValue)} ≠ ĐH ${fmt(orderValue)}`);
       }
 
       // Đơn đã hủy nhưng đã xuất HĐ
       if (isCancelled && misaRec) {
-        warnings.push('Đơn hủy nhưng đã xuất HĐ — nên hủy HĐ');
+        const s = norm(exportStatusText);
+        if (s.includes('đã xuất')) {
+          warnings.push('Đơn hủy nhưng đã xuất HĐ — cần hủy HĐ');
+        }
       }
 
       // Đơn chưa gửi hàng nhưng đã xuất HĐ
-      if (!hasShipped && !isCancelled && misaRec) {
+      if (!hasShipped && !isCancelled && misaRec && norm(exportStatusText).includes('đã xuất')) {
         warnings.push('Chưa gửi hàng nhưng đã xuất HĐ');
       }
 
-      // HĐ chưa phát hành / sai trạng thái
-      if (misaRec && statusRec) {
-        const s = norm(invoiceStatusText);
-        if (s.includes('hủy')) {
-          warnings.push('HĐ đã hủy');
-        } else if (!s.includes('đã phát hành') && !s.includes('gửi lên cqt') && !s.includes('gửi cqt')) {
-          // 'Hóa đơn mới' / 'Chưa phát hành' / khác
-          warnings.push(`HĐ chưa phát hành: ${invoiceStatusText}`);
+      // TT phát hành HĐ — cảnh báo nếu chưa phát hành
+      if (misaRec && norm(exportStatusText).includes('đã xuất')) {
+        if (!statusRec) {
+          warnings.push('Đã xuất HĐ nhưng thiếu dữ liệu trạng thái phát hành');
+        } else {
+          const rs = norm(releaseStatusText);
+          if (rs.includes('chưa phát hành')) {
+            warnings.push('HĐ chưa phát hành');
+          } else if (rs.includes('hủy')) {
+            warnings.push('HĐ đã hủy');
+          } else if (!rs.includes('đã phát hành') && rs !== '') {
+            warnings.push(`TT phát hành bất thường: ${releaseStatusText}`);
+          }
         }
-      } else if (misaRec && !statusRec) {
-        warnings.push('Chưa có dữ liệu trạng thái HĐ');
       }
 
       // Sai giá trị giữa file Hóa đơn và file MISA
-      if (statusRec && misaRec && Math.abs((statusRec.invoice_value || 0) - (invoiceValue || 0)) > 0.5) {
-        warnings.push(`Giá trị HĐ ≠ giữa 2 file MISA`);
+      if (statusRec && misaRec && invoiceValue !== null
+          && Math.abs((statusRec.invoice_value || 0) - invoiceValue) > 0.5) {
+        warnings.push('Giá trị 2 file MISA khác nhau');
       }
 
       rows.push({
@@ -194,7 +210,8 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         statusText: st.text,
         statusColor: st.color,
         invoiceValue,
-        invoiceStatusText,
+        exportStatusText,
+        releaseStatusText,
         statusFinal,
         warnings,
         misaRec,
@@ -209,8 +226,11 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
   // Stats
   const stats = useMemo(() => {
     const total = rowsWithCalc.length;
-    const issued = rowsWithCalc.filter(r => r.statusFinal.text === 'Đã xuất').length;
-    const missing = rowsWithCalc.filter(r => r.statusFinal.text === 'Chưa xuất HĐ').length;
+    const issued = rowsWithCalc.filter(r => norm(r.statusFinal.text).includes('đã xuất')).length;
+    const missing = rowsWithCalc.filter(r => {
+      const s = norm(r.statusFinal.text);
+      return s.includes('chưa xuất');
+    }).length;
     const warnings = rowsWithCalc.filter(r => r.warnings.length > 0).length;
     return { total, issued, missing, warnings };
   }, [rowsWithCalc]);
@@ -282,7 +302,9 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         const c_orderId = idx('Số đơn hàng từ hệ thống khác');
         const c_ghi = idx('Tình trạng ghi doanh số');
         const c_customer = idx('Khách hàng');
-        const c_value = idx('Giá trị đơn hàng');
+        const c_value = idx('Giá trị đơn hàng');                    // Cột H
+        const c_invoiceExport = idx('Giá trị đã xuất hóa đơn');     // Cột I
+        const c_exportStatus = idx('Tình trạng xuất hóa đơn');      // Cột L
 
         if (c_orderId === -1 || c_value === -1) {
           setAlert({ type: 'error', text: `File "${f.name}" thiếu cột cần thiết` });
@@ -301,6 +323,8 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
             platform: c_platform >= 0 ? String(row[c_platform] ?? '').trim() : '',
             customer: c_customer >= 0 ? String(row[c_customer] ?? '').trim() : '',
             order_value: +(row[c_value] || 0),
+            invoice_export_value: c_invoiceExport >= 0 ? +(row[c_invoiceExport] || 0) : 0,
+            export_status: c_exportStatus >= 0 ? String(row[c_exportStatus] ?? '').trim() : '',
             ghi_doanh_so: c_ghi >= 0 ? String(row[c_ghi] ?? '').trim() : '',
           });
         }
@@ -374,10 +398,11 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         const c_platform = idx('Sàn thương mại điện tử');
         const c_orderId = idx('Số đơn hàng từ hệ thống khác');
         const c_type = idx('Loại');
-        const c_status = idx('Trạng thái hóa đơn');
+        const c_status = idx('Trạng thái hóa đơn');            // Cột H
+        const c_release = idx('TT phát hành hóa đơn');          // Cột K
 
-        if (c_orderId === -1 || c_status === -1) {
-          setAlert({ type: 'error', text: `File "${f.name}" thiếu cột cần thiết` });
+        if (c_orderId === -1) {
+          setAlert({ type: 'error', text: `File "${f.name}" thiếu cột Số đơn hàng từ hệ thống khác` });
           continue;
         }
 
@@ -393,7 +418,8 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
             invoice_value: c_value >= 0 ? +(row[c_value] || 0) : 0,
             platform: c_platform >= 0 ? String(row[c_platform] ?? '').trim() : '',
             invoice_type: c_type >= 0 ? String(row[c_type] ?? '').trim() : '',
-            invoice_status: String(row[c_status] ?? '').trim(),
+            invoice_status: c_status >= 0 ? String(row[c_status] ?? '').trim() : '',
+            release_status: c_release >= 0 ? String(row[c_release] ?? '').trim() : '',
           });
         }
       }
@@ -439,8 +465,8 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       'Giá trị ĐH': r.orderValue,
       'Ngày gửi hàng': r.dateShip || '',
       'Giá trị xuất HĐ': r.invoiceValue ?? '',
-      'Trạng thái HĐ': r.invoiceStatusText || '',
       'Trạng thái xuất HĐ': r.statusFinal.text,
+      'TT phát hành HĐ': r.releaseStatusText || '',
       'Cảnh báo': r.warnings.join('; '),
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
@@ -561,8 +587,8 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
             <th className="text-right">Giá trị ĐH<ResizeHandle currentWidth={colW('orderValue')} onResize={w => setWidth('orderValue', w)} /></th>
             <th>Ngày gửi<ResizeHandle currentWidth={colW('dateShip')} onResize={w => setWidth('dateShip', w)} /></th>
             <th className="text-right">Giá trị xuất HĐ<ResizeHandle currentWidth={colW('invoiceValue')} onResize={w => setWidth('invoiceValue', w)} /></th>
-            <th>Trạng thái HĐ<ResizeHandle currentWidth={colW('invoiceStatus')} onResize={w => setWidth('invoiceStatus', w)} /></th>
-            <th>Trạng thái xuất HĐ<ResizeHandle currentWidth={colW('statusFinal')} onResize={w => setWidth('statusFinal', w)} /></th>
+            <th>Trạng thái xuất HĐ<ResizeHandle currentWidth={colW('exportStatus')} onResize={w => setWidth('exportStatus', w)} /></th>
+            <th>TT phát hành HĐ<ResizeHandle currentWidth={colW('releaseStatus')} onResize={w => setWidth('releaseStatus', w)} /></th>
             <th>Cảnh báo</th>
           </tr></thead>
           <tbody>
@@ -593,18 +619,18 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
                       : <span className="text-gray-300">—</span>}
                   </td>
                   <td>
-                    {r.invoiceStatusText
-                      ? <span className={`tag ${
-                          norm(r.invoiceStatusText).includes('đã phát hành') || norm(r.invoiceStatusText).includes('cqt')
-                            ? 'bg-green-100 text-green-700'
-                            : norm(r.invoiceStatusText).includes('hủy')
-                            ? 'bg-red-100 text-red-700'
-                            : 'bg-yellow-100 text-yellow-700'
-                        }`}>{r.invoiceStatusText}</span>
-                      : <span className="text-gray-300">—</span>}
+                    <span className={`tag ${tagClass(r.statusFinal.color)}`}>{r.statusFinal.text}</span>
                   </td>
                   <td>
-                    <span className={`tag ${tagClass(r.statusFinal.color)}`}>{r.statusFinal.text}</span>
+                    {r.releaseStatusText
+                      ? <span className={`tag ${
+                          norm(r.releaseStatusText).includes('đã phát hành')
+                            ? 'bg-green-100 text-green-700'
+                            : norm(r.releaseStatusText).includes('hủy')
+                            ? 'bg-red-100 text-red-700'
+                            : 'bg-yellow-100 text-yellow-700'
+                        }`}>{r.releaseStatusText}</span>
+                      : <span className="text-gray-300">—</span>}
                   </td>
                   <td>
                     {r.warnings.length === 0
