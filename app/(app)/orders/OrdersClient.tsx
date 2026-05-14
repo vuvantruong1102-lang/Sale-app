@@ -1,13 +1,16 @@
 'use client';
 
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import { Order } from '@/lib/types';
 import { createClient } from '@/lib/supabase/client';
 import { fmt, fmtDate, norm, findCol, shortStatus, tagClass, parseDate, inRange } from '@/lib/utils';
 import { useResizableCols, ResizeHandle, ColDef } from '@/lib/useResizableCols';
-import { Upload, Download, ChevronLeft, ChevronRight, Search, RotateCcw } from 'lucide-react';
+import {
+  Upload, Download, ChevronLeft, ChevronRight, Search, RotateCcw,
+  Filter, X, Check
+} from 'lucide-react';
 
 const PAGE_SIZE = 50;
 
@@ -26,8 +29,15 @@ const DEFAULT_COLS: ColDef[] = [
   { key: 'revenue',    width: 105, minWidth: 80 },
   { key: 'cogs',       width: 100, minWidth: 80 },
   { key: 'profit',     width: 105, minWidth: 80 },
-  { key: 'invoice',    width: 65,  minWidth: 50 },
+  { key: 'invoice',    width: 80,  minWidth: 60 },
 ];
+
+// Type cho mỗi col filter
+// - 'list': checkbox danh sách value (text/category)
+// - 'number': range min/max
+type ColFilter =
+  | { type: 'list'; selected: Set<string> }   // empty Set = ALL
+  | { type: 'number'; min?: number; max?: number };
 
 type Props = {
   initialOrders: Order[];
@@ -38,9 +48,6 @@ export default function OrdersClient({ initialOrders, products }: Props) {
   const router = useRouter();
   const supabase = createClient();
   const [orders, setOrders] = useState<Order[]>(initialOrders);
-  const [platform, setPlatform] = useState('all');
-  const [status, setStatus] = useState('all');
-  const [invFilter, setInvFilter] = useState('all');
   const [dateRange, setDateRange] = useState('all');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
@@ -50,9 +57,13 @@ export default function OrdersClient({ initialOrders, products }: Props) {
   const [alert, setAlert] = useState<{ type: string; text: string } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // Resize cols (lưu vào localStorage)
+  // Resize cols
   const { cols, setWidth, reset } = useResizableCols('orders-col-widths', DEFAULT_COLS);
   const colW = (k: string) => cols.find(c => c.key === k)?.width || 100;
+
+  // Filter mỗi cột
+  const [colFilters, setColFilters] = useState<Record<string, ColFilter>>({});
+  const [openFilter, setOpenFilter] = useState<string | null>(null);
 
   // Map SKU -> giá vốn để lookup nhanh
   const costMap = useMemo(() => {
@@ -61,31 +72,113 @@ export default function OrdersClient({ initialOrders, products }: Props) {
     return m;
   }, [products]);
 
-  const statusOptions = useMemo(() => {
-    const set = new Set<string>();
-    orders.forEach(o => set.add(shortStatus(o.status || '').text));
-    return Array.from(set).sort();
-  }, [orders]);
+  // Tính giá trị derived của mỗi row 1 lần để dùng cho filter + display
+  const rowsWithCalc = useMemo(() => orders.map(o => {
+    const price = (o.price_deal || 0) - (o.shop_voucher || 0);
+    const totalFee = (o.fee_fix || 0) + (o.fee_service || 0) + (o.fee_payment || 0);
+    const revenue = price - totalFee;
+    const cogs = (costMap.get(o.sku || '') || 0) * (o.quantity || 1);
+    const profit = revenue - cogs;
+    const st = shortStatus(o.status || '');
+    return { o, price, totalFee, revenue, cogs, profit, statusText: st.text, statusColor: st.color };
+  }), [orders, costMap]);
 
+  // Tập value duy nhất cho từng cột list-type (dùng cho dropdown checkbox)
+  const uniqueValues = useMemo(() => ({
+    platform: new Set(orders.map(o => o.platform === 'shopee' ? 'Shopee' : 'TikTok')),
+    carrier: new Set(orders.map(o => o.carrier || '(trống)').sort()),
+    status: new Set(rowsWithCalc.map(r => r.statusText).sort()),
+    sku: new Set(orders.map(o => o.sku || '(trống)').sort()),
+    invoice: new Set(['Đã xuất', 'Chưa']),
+  }), [orders, rowsWithCalc]);
+
+  // ============ FILTER LOGIC ============
   const filtered = useMemo(() => {
-    const q = norm(search);
-    let list = orders.slice();
-    if (platform !== 'all') list = list.filter(o => o.platform === platform);
-    if (status !== 'all') list = list.filter(o => shortStatus(o.status || '').text === status);
-    if (invFilter === 'yes') list = list.filter(o => o.invoice_issued);
-    else if (invFilter === 'no') list = list.filter(o => !o.invoice_issued);
+    let list = rowsWithCalc;
+
+    // Filter theo ngày (toolbar)
     if (dateRange !== 'all') {
-      list = list.filter(o => inRange(o.date_order, dateRange, dateFrom, dateTo));
+      list = list.filter(r => inRange(r.o.date_order, dateRange, dateFrom, dateTo));
     }
-    if (q) list = list.filter(o =>
-      norm(o.order_id).includes(q) || norm(o.product_name).includes(q) || norm(o.sku).includes(q)
-    );
+
+    // Filter mỗi cột
+    const cf = colFilters;
+    list = list.filter(r => {
+      const o = r.o;
+
+      // Helper: kiểm tra list filter
+      const matchList = (key: string, val: string) => {
+        const f = cf[key];
+        if (!f || f.type !== 'list' || f.selected.size === 0) return true;
+        return f.selected.has(val);
+      };
+      // Helper: kiểm tra number filter
+      const matchNum = (key: string, val: number) => {
+        const f = cf[key];
+        if (!f || f.type !== 'number') return true;
+        if (f.min !== undefined && val < f.min) return false;
+        if (f.max !== undefined && val > f.max) return false;
+        return true;
+      };
+
+      if (!matchList('platform', o.platform === 'shopee' ? 'Shopee' : 'TikTok')) return false;
+      if (!matchList('carrier', o.carrier || '(trống)')) return false;
+      if (!matchList('status', r.statusText)) return false;
+      if (!matchList('sku', o.sku || '(trống)')) return false;
+      if (!matchList('invoice', o.invoice_issued ? 'Đã xuất' : 'Chưa')) return false;
+      if (!matchNum('price', r.price)) return false;
+      if (!matchNum('fee', r.totalFee)) return false;
+      if (!matchNum('revenue', r.revenue)) return false;
+      if (!matchNum('cogs', r.cogs)) return false;
+      if (!matchNum('profit', r.profit)) return false;
+
+      // Filter text cho cột Mã đơn, Mã kiện, Sản phẩm (single text search)
+      const cf_orderId = cf['orderId'];
+      if (cf_orderId && cf_orderId.type === 'list' && cf_orderId.selected.size > 0) {
+        const q = norm(Array.from(cf_orderId.selected)[0]);
+        if (!norm(o.order_id).includes(q)) return false;
+      }
+      const cf_pkg = cf['package'];
+      if (cf_pkg && cf_pkg.type === 'list' && cf_pkg.selected.size > 0) {
+        const q = norm(Array.from(cf_pkg.selected)[0]);
+        if (!norm(o.package_id).includes(q)) return false;
+      }
+      const cf_prod = cf['product'];
+      if (cf_prod && cf_prod.type === 'list' && cf_prod.selected.size > 0) {
+        const q = norm(Array.from(cf_prod.selected)[0]);
+        if (!norm(o.product_name).includes(q)) return false;
+      }
+
+      return true;
+    });
+
+    // Search toolbar (full text)
+    const q = norm(search);
+    if (q) {
+      list = list.filter(r =>
+        norm(r.o.order_id).includes(q) ||
+        norm(r.o.product_name).includes(q) ||
+        norm(r.o.sku).includes(q)
+      );
+    }
+
     return list;
-  }, [orders, platform, status, invFilter, dateRange, dateFrom, dateTo, search]);
+  }, [rowsWithCalc, dateRange, dateFrom, dateTo, search, colFilters]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageRows = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
+  const activeFilterCount = Object.values(colFilters).filter(f => {
+    if (f.type === 'list') return f.selected.size > 0;
+    return f.min !== undefined || f.max !== undefined;
+  }).length;
+
+  const clearAllFilters = () => {
+    setColFilters({});
+    setPage(1);
+  };
+
+  // ============ IMPORT (giữ nguyên + dedupe) ============
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
@@ -170,13 +263,12 @@ export default function OrdersClient({ initialOrders, products }: Props) {
         }
       }
 
-      // Lấy user_id
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Không xác thực được người dùng');
 
       // ============================================================
-      // DEDUPE: Đơn nhiều dòng (multi-SKU) — Shopee lặp phí ở mỗi dòng
-      // Chỉ giữ phí ở "dòng chính" (total_paid cao nhất), các dòng phụ phí = 0
+      // DEDUPE phí cho đơn nhiều dòng (Shopee lặp phí ở mỗi dòng)
+      // Chỉ giữ phí ở dòng có total_paid cao nhất
       // ============================================================
       const byOrderId = new Map<string, Order[]>();
       allRows.forEach(r => {
@@ -185,9 +277,8 @@ export default function OrdersClient({ initialOrders, products }: Props) {
         byOrderId.set(r.order_id, arr);
       });
       let dedupedCount = 0;
-      byOrderId.forEach((lines, orderId) => {
+      byOrderId.forEach((lines) => {
         if (lines.length <= 1) return;
-        // Tìm dòng có total_paid cao nhất - đó là dòng chính
         let mainIdx = 0;
         let maxPaid = lines[0].total_paid || 0;
         for (let i = 1; i < lines.length; i++) {
@@ -196,7 +287,6 @@ export default function OrdersClient({ initialOrders, products }: Props) {
             mainIdx = i;
           }
         }
-        // Set phí = 0 cho tất cả dòng KHÔNG phải dòng chính
         lines.forEach((line, i) => {
           if (i !== mainIdx) {
             line.fee_fix = 0;
@@ -207,13 +297,11 @@ export default function OrdersClient({ initialOrders, products }: Props) {
         });
       });
 
-      // Lấy danh sách unique_key đã có để biết added vs updated
       const existingKeys = new Set(orders.map(o => o.unique_key));
       allRows.forEach(r => {
         if (existingKeys.has(r.unique_key)) updated++; else added++;
       });
 
-      // Upsert batch 500 dòng / lần
       const BATCH = 500;
       const payload = allRows.map(r => ({ ...r, user_id: user.id }));
       for (let i = 0; i < payload.length; i += BATCH) {
@@ -232,7 +320,6 @@ export default function OrdersClient({ initialOrders, products }: Props) {
           skuMap.set(r.sku, { sku: r.sku, name: r.product_name || '', variation: r.variation || '' });
         }
       });
-      // Lấy SKU đã có
       const { data: existingProds } = await supabase.from('products').select('sku');
       const existingSkus = new Set((existingProds || []).map(p => p.sku));
       const newProducts = Array.from(skuMap.values())
@@ -249,7 +336,6 @@ export default function OrdersClient({ initialOrders, products }: Props) {
         }${dedupedCount ? ` • Đã chống lặp phí cho ${dedupedCount} dòng phụ` : ''}`
       });
 
-      // Reload danh sách orders
       const { data: fresh } = await supabase
         .from('orders').select('*').order('date_order', { ascending: false }).limit(20000);
       setOrders(fresh || []);
@@ -262,32 +348,26 @@ export default function OrdersClient({ initialOrders, products }: Props) {
     }
   };
 
+  // ============ EXPORT ============
   const handleExport = () => {
     if (!filtered.length) { window.alert('Không có dữ liệu'); return; }
-    const rows = filtered.map(o => {
-      const price = (o.price_deal || 0) - (o.shop_voucher || 0);
-      const totalFee = (o.fee_fix || 0) + (o.fee_service || 0) + (o.fee_payment || 0);
-      const revenue = price - totalFee;
-      const cogs = (costMap.get(o.sku || '') || 0) * (o.quantity || 1);
-      const profit = revenue - cogs;
-      return {
-        'Ngày đặt': o.date_order,
-        'Sàn': o.platform,
-        'Mã đơn': o.order_id,
-        'ĐVVC': o.carrier,
-        'Mã kiện': o.package_id,
-        'Trạng thái': o.status,
-        'Sản phẩm': o.product_name,
-        'SKU': o.sku,
-        'Số lượng': o.quantity,
-        'Giá bán': price,
-        'Tổng phí': totalFee,
-        'Doanh thu': revenue,
-        'Giá vốn HB': cogs,
-        'Lợi nhuận': profit,
-        'Đã xuất HĐ': o.invoice_issued ? 'Có' : 'Không',
-      };
-    });
+    const rows = filtered.map(r => ({
+      'Ngày đặt': r.o.date_order,
+      'Sàn': r.o.platform,
+      'Mã đơn': r.o.order_id,
+      'ĐVVC': r.o.carrier,
+      'Mã kiện': r.o.package_id,
+      'Trạng thái': r.o.status,
+      'Sản phẩm': r.o.product_name,
+      'SKU': r.o.sku,
+      'Số lượng': r.o.quantity,
+      'Giá bán': r.price,
+      'Tổng phí': r.totalFee,
+      'Doanh thu': r.revenue,
+      'Giá vốn HB': r.cogs,
+      'Lợi nhuận': r.profit,
+      'Đã xuất HĐ': r.o.invoice_issued ? 'Có' : 'Không',
+    }));
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Đơn hàng');
@@ -324,25 +404,17 @@ export default function OrdersClient({ initialOrders, products }: Props) {
           </>
         )}
 
-        <select className="input" value={platform} onChange={e => { setPlatform(e.target.value); setPage(1); }}>
-          <option value="all">Tất cả sàn</option>
-          <option value="shopee">Shopee</option>
-          <option value="tiktok">TikTok</option>
-        </select>
-        <select className="input" value={status} onChange={e => { setStatus(e.target.value); setPage(1); }}>
-          <option value="all">Tất cả trạng thái</option>
-          {statusOptions.map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
-        <select className="input" value={invFilter} onChange={e => { setInvFilter(e.target.value); setPage(1); }}>
-          <option value="all">Tất cả HĐ</option>
-          <option value="yes">Đã xuất HĐ</option>
-          <option value="no">Chưa xuất HĐ</option>
-        </select>
         <div className="relative">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-          <input className="input pl-8 w-56" placeholder="Tìm mã đơn, SP, SKU..." value={search}
+          <input className="input pl-8 w-64" placeholder="Tìm mã đơn, SP, SKU..." value={search}
             onChange={e => { setSearch(e.target.value); setPage(1); }} />
         </div>
+
+        {activeFilterCount > 0 && (
+          <button className="btn btn-secondary btn-sm" onClick={clearAllFilters}>
+            <X size={14} /> Xóa {activeFilterCount} bộ lọc cột
+          </button>
+        )}
         <button className="btn btn-secondary btn-sm" onClick={handleExport}>
           <Download size={14} /> Xuất Excel
         </button>
@@ -365,20 +437,46 @@ export default function OrdersClient({ initialOrders, products }: Props) {
             {cols.map(c => <col key={c.key} style={{ width: c.width }} />)}
           </colgroup>
           <thead><tr>
-            <th>Ngày đặt<ResizeHandle currentWidth={colW('date')} onResize={w => setWidth('date', w)} /></th>
-            <th>Sàn<ResizeHandle currentWidth={colW('platform')} onResize={w => setWidth('platform', w)} /></th>
-            <th>Mã đơn<ResizeHandle currentWidth={colW('orderId')} onResize={w => setWidth('orderId', w)} /></th>
-            <th>ĐVVC<ResizeHandle currentWidth={colW('carrier')} onResize={w => setWidth('carrier', w)} /></th>
-            <th>Mã kiện<ResizeHandle currentWidth={colW('package')} onResize={w => setWidth('package', w)} /></th>
-            <th>Trạng thái<ResizeHandle currentWidth={colW('status')} onResize={w => setWidth('status', w)} /></th>
-            <th>Sản phẩm<ResizeHandle currentWidth={colW('product')} onResize={w => setWidth('product', w)} /></th>
-            <th>SKU<ResizeHandle currentWidth={colW('sku')} onResize={w => setWidth('sku', w)} /></th>
-            <th className="text-right">Giá bán<ResizeHandle currentWidth={colW('price')} onResize={w => setWidth('price', w)} /></th>
-            <th className="text-right">Tổng phí<ResizeHandle currentWidth={colW('fee')} onResize={w => setWidth('fee', w)} /></th>
-            <th className="text-right">Doanh thu<ResizeHandle currentWidth={colW('revenue')} onResize={w => setWidth('revenue', w)} /></th>
-            <th className="text-right">Giá vốn HB<ResizeHandle currentWidth={colW('cogs')} onResize={w => setWidth('cogs', w)} /></th>
-            <th className="text-right">Lợi nhuận<ResizeHandle currentWidth={colW('profit')} onResize={w => setWidth('profit', w)} /></th>
-            <th>HĐ</th>
+            <ColHeader label="Ngày đặt" colKey="date" width={colW('date')} onResize={w => setWidth('date', w)} />
+            <ColHeader label="Sàn" colKey="platform" width={colW('platform')} onResize={w => setWidth('platform', w)}
+              filterable filterType="list" filterValues={Array.from(uniqueValues.platform)}
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Mã đơn" colKey="orderId" width={colW('orderId')} onResize={w => setWidth('orderId', w)}
+              filterable filterType="text"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="ĐVVC" colKey="carrier" width={colW('carrier')} onResize={w => setWidth('carrier', w)}
+              filterable filterType="list" filterValues={Array.from(uniqueValues.carrier)}
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Mã kiện" colKey="package" width={colW('package')} onResize={w => setWidth('package', w)}
+              filterable filterType="text"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Trạng thái" colKey="status" width={colW('status')} onResize={w => setWidth('status', w)}
+              filterable filterType="list" filterValues={Array.from(uniqueValues.status)}
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Sản phẩm" colKey="product" width={colW('product')} onResize={w => setWidth('product', w)}
+              filterable filterType="text"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="SKU" colKey="sku" width={colW('sku')} onResize={w => setWidth('sku', w)}
+              filterable filterType="list" filterValues={Array.from(uniqueValues.sku)}
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Giá bán" colKey="price" width={colW('price')} onResize={w => setWidth('price', w)} align="right"
+              filterable filterType="number"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Tổng phí" colKey="fee" width={colW('fee')} onResize={w => setWidth('fee', w)} align="right"
+              filterable filterType="number"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Doanh thu" colKey="revenue" width={colW('revenue')} onResize={w => setWidth('revenue', w)} align="right"
+              filterable filterType="number"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Giá vốn HB" colKey="cogs" width={colW('cogs')} onResize={w => setWidth('cogs', w)} align="right"
+              filterable filterType="number"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Lợi nhuận" colKey="profit" width={colW('profit')} onResize={w => setWidth('profit', w)} align="right"
+              filterable filterType="number"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="HĐ" colKey="invoice" width={colW('invoice')} noResize
+              filterable filterType="list" filterValues={Array.from(uniqueValues.invoice)}
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
           </tr></thead>
           <tbody>
             {pageRows.length === 0 && (
@@ -386,13 +484,8 @@ export default function OrdersClient({ initialOrders, products }: Props) {
                 {orders.length === 0 ? 'Chưa có đơn hàng — hãy import file Shopee' : 'Không có đơn khớp bộ lọc'}
               </td></tr>
             )}
-            {pageRows.map(o => {
-              const st = shortStatus(o.status || '');
-              const price = (o.price_deal || 0) - (o.shop_voucher || 0);
-              const totalFee = (o.fee_fix || 0) + (o.fee_service || 0) + (o.fee_payment || 0);
-              const revenue = price - totalFee;
-              const cogs = (costMap.get(o.sku || '') || 0) * (o.quantity || 1);
-              const profit = revenue - cogs;
+            {pageRows.map(r => {
+              const o = r.o;
               return (
                 <tr key={o.unique_key}>
                   <td className="text-xs">{fmtDate(o.date_order)}</td>
@@ -400,18 +493,18 @@ export default function OrdersClient({ initialOrders, products }: Props) {
                   <td className="font-medium text-xs">{o.order_id}</td>
                   <td className="text-xs">{o.carrier || '-'}</td>
                   <td className="text-xs">{o.package_id || '-'}</td>
-                  <td><span className={`tag ${tagClass(st.color)}`}>{st.text}</span></td>
+                  <td><span className={`tag ${tagClass(r.statusColor)}`}>{r.statusText}</span></td>
                   <td>
                     <div className="truncate" title={o.product_name}>{o.product_name || '-'}</div>
                     {o.quantity && o.quantity > 1 && <span className="text-xs text-gray-400">×{o.quantity}</span>}
                   </td>
                   <td className="text-xs">{o.sku || '-'}</td>
-                  <td className="text-right">{fmt(price)}</td>
-                  <td className="text-right text-yellow-600">{fmt(totalFee)}</td>
-                  <td className="text-right">{fmt(revenue)}</td>
-                  <td className="text-right">{cogs > 0 ? fmt(cogs) : <span className="text-gray-300">—</span>}</td>
-                  <td className={`text-right font-medium ${profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                    {cogs > 0 ? fmt(profit) : <span className="text-gray-300">—</span>}
+                  <td className="text-right">{fmt(r.price)}</td>
+                  <td className="text-right text-yellow-600">{fmt(r.totalFee)}</td>
+                  <td className="text-right">{fmt(r.revenue)}</td>
+                  <td className="text-right">{r.cogs > 0 ? fmt(r.cogs) : <span className="text-gray-300">—</span>}</td>
+                  <td className={`text-right font-medium ${r.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                    {r.cogs > 0 ? fmt(r.profit) : <span className="text-gray-300">—</span>}
                   </td>
                   <td>{o.invoice_issued
                     ? <span className="tag bg-green-100 text-green-700">✓</span>
@@ -424,18 +517,221 @@ export default function OrdersClient({ initialOrders, products }: Props) {
       </div>
 
       <div className="flex items-center justify-between mt-4">
-        <div className="text-sm text-gray-500">{filtered.length.toLocaleString('vi-VN')} đơn</div>
+        <div className="text-sm text-gray-500">{filtered.length.toLocaleString('vi-VN')} đơn{activeFilterCount > 0 && ` (đã lọc từ ${orders.length})`}</div>
         <div className="flex items-center gap-2">
-          <button className="btn btn-secondary btn-sm" disabled={page === 1}
-            onClick={() => setPage(p => Math.max(1, p - 1))}>
+          <button className="btn btn-secondary btn-sm" disabled={page === 1} onClick={() => setPage(p => Math.max(1, p - 1))}>
             <ChevronLeft size={14} /> Trước
           </button>
           <span className="text-sm text-gray-500">Trang {page}/{totalPages}</span>
-          <button className="btn btn-secondary btn-sm" disabled={page >= totalPages}
-            onClick={() => setPage(p => Math.min(totalPages, p + 1))}>
+          <button className="btn btn-secondary btn-sm" disabled={page >= totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))}>
             Sau <ChevronRight size={14} />
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ============ COMPONENT: HEADER CỘT CÓ FILTER ============
+type ColHeaderProps = {
+  label: string;
+  colKey: string;
+  width: number;
+  onResize?: (w: number) => void;
+  align?: 'left' | 'right';
+  noResize?: boolean;
+  filterable?: boolean;
+  filterType?: 'list' | 'number' | 'text';
+  filterValues?: string[];
+  filters?: Record<string, ColFilter>;
+  setFilters?: (f: Record<string, ColFilter>) => void;
+  open?: string | null;
+  setOpen?: (k: string | null) => void;
+  onPageChange?: () => void;
+};
+
+function ColHeader({
+  label, colKey, width, onResize, align, noResize,
+  filterable, filterType, filterValues, filters, setFilters, open, setOpen, onPageChange,
+}: ColHeaderProps) {
+  const f = filters?.[colKey];
+  const hasFilter = !!f && (
+    (f.type === 'list' && f.selected.size > 0) ||
+    (f.type === 'number' && (f.min !== undefined || f.max !== undefined))
+  );
+  const isOpen = open === colKey;
+
+  return (
+    <th className={align === 'right' ? 'text-right' : ''}>
+      <div className="flex items-center gap-1" style={{ justifyContent: align === 'right' ? 'flex-end' : 'flex-start' }}>
+        <span>{label}</span>
+        {filterable && (
+          <button
+            onClick={(e) => { e.stopPropagation(); setOpen?.(isOpen ? null : colKey); }}
+            className={`filter-btn ${hasFilter ? 'active' : ''}`}
+            title={hasFilter ? 'Đang lọc cột này' : 'Lọc'}
+          >
+            <Filter size={11} />
+          </button>
+        )}
+      </div>
+      {isOpen && filterable && (
+        <FilterPopup
+          colKey={colKey}
+          type={filterType!}
+          values={filterValues}
+          current={f}
+          onApply={(newFilter) => {
+            const next = { ...(filters || {}) };
+            if (newFilter) next[colKey] = newFilter;
+            else delete next[colKey];
+            setFilters?.(next);
+            setOpen?.(null);
+            onPageChange?.();
+          }}
+          onClose={() => setOpen?.(null)}
+        />
+      )}
+      {!noResize && onResize && <ResizeHandle currentWidth={width} onResize={onResize} />}
+    </th>
+  );
+}
+
+// ============ COMPONENT: POPUP FILTER ============
+type FilterPopupProps = {
+  colKey: string;
+  type: 'list' | 'number' | 'text';
+  values?: string[];
+  current?: ColFilter;
+  onApply: (f: ColFilter | null) => void;
+  onClose: () => void;
+};
+
+function FilterPopup({ type, values, current, onApply, onClose }: FilterPopupProps) {
+  const popupRef = useRef<HTMLDivElement>(null);
+
+  // Click outside để đóng
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      if (popupRef.current && !popupRef.current.contains(e.target as Node)) onClose();
+    };
+    setTimeout(() => document.addEventListener('mousedown', onClick), 0);
+    return () => document.removeEventListener('mousedown', onClick);
+  }, [onClose]);
+
+  // ===== LIST FILTER (checkbox) =====
+  if (type === 'list') {
+    const [selected, setSelected] = useState<Set<string>>(
+      current?.type === 'list' ? new Set(current.selected) : new Set()
+    );
+    const [searchVal, setSearchVal] = useState('');
+    const all = (values || []).filter(v => norm(v).includes(norm(searchVal)));
+    const allSelected = selected.size === 0; // empty = all
+    const toggleOne = (v: string) => {
+      const next = new Set(selected);
+      if (next.has(v)) next.delete(v); else next.add(v);
+      setSelected(next);
+    };
+    const selectAll = () => setSelected(new Set());
+    const selectNone = () => setSelected(new Set(values || []));
+
+    return (
+      <div ref={popupRef} className="filter-popup" onClick={e => e.stopPropagation()}>
+        <input className="input input-sm w-full mb-2" placeholder="Tìm trong giá trị..." value={searchVal}
+          onChange={e => setSearchVal(e.target.value)} autoFocus />
+        <div className="flex gap-2 mb-2 text-xs">
+          <button className="text-brand-500 hover:underline" onClick={selectAll}>Chọn tất cả</button>
+          <span className="text-gray-300">|</span>
+          <button className="text-brand-500 hover:underline" onClick={selectNone}>Bỏ chọn tất cả</button>
+        </div>
+        <div className="filter-list">
+          {all.length === 0 && <div className="text-xs text-gray-400 p-2 text-center">Không có giá trị</div>}
+          {all.map(v => {
+            const checked = allSelected ? true : selected.has(v);
+            return (
+              <label key={v} className="filter-item">
+                <input type="checkbox" checked={checked} onChange={() => toggleOne(v)} />
+                <span className="truncate" title={v}>{v}</span>
+              </label>
+            );
+          })}
+        </div>
+        <div className="filter-actions">
+          <button className="btn btn-secondary btn-sm" onClick={() => { onApply(null); }}>Xóa lọc</button>
+          <button className="btn btn-primary btn-sm" onClick={() => {
+            onApply(selected.size === 0 ? null : { type: 'list', selected });
+          }}>
+            <Check size={12} /> Áp dụng
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ===== NUMBER FILTER (min/max) =====
+  if (type === 'number') {
+    const [min, setMin] = useState<string>(
+      current?.type === 'number' && current.min !== undefined ? String(current.min) : ''
+    );
+    const [max, setMax] = useState<string>(
+      current?.type === 'number' && current.max !== undefined ? String(current.max) : ''
+    );
+    return (
+      <div ref={popupRef} className="filter-popup" onClick={e => e.stopPropagation()}>
+        <div className="text-xs text-gray-500 mb-2">Khoảng giá trị</div>
+        <div className="space-y-2">
+          <div>
+            <label className="text-[11px] text-gray-500">Từ:</label>
+            <input type="number" className="input input-sm w-full" placeholder="Không giới hạn"
+              value={min} onChange={e => setMin(e.target.value)} autoFocus />
+          </div>
+          <div>
+            <label className="text-[11px] text-gray-500">Đến:</label>
+            <input type="number" className="input input-sm w-full" placeholder="Không giới hạn"
+              value={max} onChange={e => setMax(e.target.value)} />
+          </div>
+        </div>
+        <div className="filter-actions">
+          <button className="btn btn-secondary btn-sm" onClick={() => onApply(null)}>Xóa lọc</button>
+          <button className="btn btn-primary btn-sm" onClick={() => {
+            const f: ColFilter = { type: 'number' };
+            if (min !== '' && !isNaN(+min)) f.min = +min;
+            if (max !== '' && !isNaN(+max)) f.max = +max;
+            if (f.min === undefined && f.max === undefined) onApply(null);
+            else onApply(f);
+          }}>
+            <Check size={12} /> Áp dụng
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ===== TEXT FILTER (single input - search contains) =====
+  const initial = current?.type === 'list' && current.selected.size > 0
+    ? Array.from(current.selected)[0] : '';
+  const [text, setText] = useState(initial);
+  return (
+    <div ref={popupRef} className="filter-popup" onClick={e => e.stopPropagation()}>
+      <div className="text-xs text-gray-500 mb-2">Chứa văn bản</div>
+      <input className="input input-sm w-full" placeholder="Nhập để tìm..." value={text}
+        onChange={e => setText(e.target.value)} autoFocus
+        onKeyDown={e => {
+          if (e.key === 'Enter') {
+            if (!text.trim()) onApply(null);
+            else onApply({ type: 'list', selected: new Set([text.trim()]) });
+          }
+          if (e.key === 'Escape') onClose();
+        }}
+      />
+      <div className="filter-actions">
+        <button className="btn btn-secondary btn-sm" onClick={() => onApply(null)}>Xóa lọc</button>
+        <button className="btn btn-primary btn-sm" onClick={() => {
+          if (!text.trim()) onApply(null);
+          else onApply({ type: 'list', selected: new Set([text.trim()]) });
+        }}>
+          <Check size={12} /> Áp dụng
+        </button>
       </div>
     </div>
   );
