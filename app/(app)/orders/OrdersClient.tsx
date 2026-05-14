@@ -753,13 +753,16 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       }
 
       // 2. Update fee_fix của bảng orders cho các đơn TikTok này (cho cột Tổng phí)
-      //    Chỉ update đơn TikTok đang có trong DB; cộng vào dòng chính (total_paid cao nhất)
+      //    Chỉ update đơn TikTok đang có trong DB; cộng vào dòng chính (Giá trị ĐH cao nhất)
+      // FIX: Fetch orders mới nhất từ DB thay vì dùng state cũ (có thể bị cache)
+      const freshTiktokOrders = await fetchAll(supabase as any, 'orders', { orderBy: null });
       const tiktokOrdersByOid = new Map<string, Order[]>();
-      orders.filter(o => o.platform === 'tiktok').forEach(o => {
+      (freshTiktokOrders as Order[]).filter(o => o.platform === 'tiktok').forEach(o => {
         const arr = tiktokOrdersByOid.get(o.order_id) || [];
         arr.push(o);
         tiktokOrdersByOid.set(o.order_id, arr);
       });
+      console.log(`[Ví TikTok] Tổng đơn TikTok trong DB: ${tiktokOrdersByOid.size} đơn (${(freshTiktokOrders as Order[]).filter(o => o.platform === 'tiktok').length} dòng)`);
 
       // Build list các orders cần update fee
       const orderUpdates: { unique_key: string; fee_fix: number }[] = [];
@@ -786,27 +789,38 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
 
       // Update từng dòng (Supabase không hỗ trợ bulk update by unique_key trực tiếp ngoài upsert)
       // Dùng upsert với select dòng đầy đủ
+      // FIX: Chia .in() thành batch nhỏ để tránh URL quá dài (>8KB)
+      let actualUpdated = 0;
       if (orderUpdates.length > 0) {
-        // Fetch all matching orders, merge fee_fix, upsert
-        const keys = orderUpdates.map(u => u.unique_key);
-        const { data: existing } = await supabase
-          .from('orders').select('*').in('unique_key', keys);
-        if (existing) {
-          const feeMap = new Map(orderUpdates.map(u => [u.unique_key, u.fee_fix]));
-          const updated = existing.map(o => ({ ...o, fee_fix: feeMap.get(o.unique_key) ?? o.fee_fix }));
+        const allKeys = orderUpdates.map(u => u.unique_key);
+        const feeMap = new Map(orderUpdates.map(u => [u.unique_key, u.fee_fix]));
+        const KEY_BATCH = 100; // .in() max 100 keys per request
+        const allExisting: any[] = [];
+        for (let i = 0; i < allKeys.length; i += KEY_BATCH) {
+          const sliceKeys = allKeys.slice(i, i + KEY_BATCH);
+          const { data: existing, error: selectError } = await supabase
+            .from('orders').select('*').in('unique_key', sliceKeys);
+          if (selectError) throw selectError;
+          if (existing) allExisting.push(...existing);
+        }
+        console.log(`[Ví TikTok] Fetched ${allExisting.length}/${allKeys.length} existing orders to update fee`);
+
+        if (allExisting.length > 0) {
+          const updated = allExisting.map(o => ({ ...o, fee_fix: feeMap.get(o.unique_key) ?? o.fee_fix }));
           for (let i = 0; i < updated.length; i += BATCH) {
             const slice = updated.slice(i, i + BATCH);
             const { error } = await supabase
               .from('orders')
               .upsert(slice, { onConflict: 'user_id,unique_key', ignoreDuplicates: false });
             if (error) throw error;
+            actualUpdated += slice.length;
           }
         }
       }
 
       setAlert({
         type: 'success',
-        text: `✓ Đã import Ví TikTok: ${accMap.size} đơn quyết toán • Cập nhật phí cho ${feeAppliedCount} đơn TikTok đã import`,
+        text: `✓ Đã import Ví TikTok: ${accMap.size} đơn quyết toán • Khớp được ${feeAppliedCount} đơn TikTok có trong DB • Đã update phí cho ${actualUpdated} dòng`,
       });
 
       // Reload data
