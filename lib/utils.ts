@@ -64,7 +64,12 @@ export const inRange = (d: any, range: string, from?: string, to?: string): bool
   }
   if (range === 'year') return dt.getFullYear() === now.getFullYear();
   if (range === 'custom' && from && to) {
-    const f = new Date(from); const t = new Date(to); t.setHours(23, 59, 59, 999);
+    // Parse "YYYY-MM-DD" theo LOCAL timezone (không phải UTC)
+    // new Date("2026-04-01") sẽ là UTC midnight = 07:00 GMT+7 → sai
+    const [fy, fm, fd] = from.split('-').map(Number);
+    const [ty, tm, td] = to.split('-').map(Number);
+    const f = new Date(fy, fm - 1, fd, 0, 0, 0);
+    const t = new Date(ty, tm - 1, td, 23, 59, 59, 999);
     return dt >= f && dt <= t;
   }
   return true;
