@@ -148,9 +148,9 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         revenue = isMainRow && hasPayout ? payoutValue : 0;
       } else {
         // Phí TTLK = chênh lệch khi Shopee TT < (orderValue - totalFee) trên DÒNG CHÍNH
-        // Áp dụng cho cả đơn (đặt ở dòng chính), dòng phụ phí TTLK = 0
+        // CHỈ áp dụng cho đơn Shopee; đơn TikTok luôn = 0 (phí TT đã có trong Tổng phí)
         const baseRevenue = orderValue - totalFee; // doanh thu chưa trừ TTLK
-        if (isMainRow && hasPayout && payoutValue >= 0 && payoutValue < baseRevenue) {
+        if (o.platform === 'shopee' && isMainRow && hasPayout && payoutValue >= 0 && payoutValue < baseRevenue) {
           feeTTLK = baseRevenue - payoutValue;
         }
         revenue = baseRevenue - feeTTLK;
