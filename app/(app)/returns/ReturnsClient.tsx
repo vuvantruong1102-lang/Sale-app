@@ -3,15 +3,25 @@
 import { useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
-import { fmt, fmtDate, shortStatus, tagClass } from '@/lib/utils';
+import { fmt, fmtDate, norm, shortStatus, tagClass } from '@/lib/utils';
 import { Order, Return } from '@/lib/types';
-import { Download, RotateCcw, Search, Check, X } from 'lucide-react';
+import { Download, Search, Check } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { useResizableCols, ColDef } from '@/lib/useResizableCols';
+import { ColHeader, ColFilter } from '@/components/ColHeader';
+
+type InvStatus = {
+  order_id: string;
+  invoice_no?: string;
+  release_status?: string;
+  adjustment_invoice_no?: string;
+};
 
 type Props = {
   initialOrders: Order[];
   initialReturns: Return[];
   reconciliation: { order_id: string; shopee_payout: number; has_adjustment?: boolean }[];
+  initialInvStatus: InvStatus[];
 };
 
 type Row = {
@@ -31,36 +41,63 @@ type Row = {
   shopeePayout: number | null;
   shopReceived: boolean;
   goodsCondition: string;
+  invoiceNo: string;
+  releaseStatus: string;
+  adjustmentInvoiceNo: string;
 };
 
-export default function ReturnsClient({ initialOrders, initialReturns, reconciliation }: Props) {
+const DEFAULT_COLS: ColDef[] = [
+  { key: 'date',                width: 120, minWidth: 90 },
+  { key: 'platform',            width: 80,  minWidth: 60 },
+  { key: 'orderId',             width: 140, minWidth: 100 },
+  { key: 'product',             width: 240, minWidth: 120 },
+  { key: 'sku',                 width: 95,  minWidth: 60 },
+  { key: 'price',               width: 100, minWidth: 80 },
+  { key: 'quantity',            width: 70,  minWidth: 50 },
+  { key: 'orderValue',          width: 110, minWidth: 80 },
+  { key: 'refundStatus',        width: 130, minWidth: 100 },
+  { key: 'returnedQty',         width: 80,  minWidth: 60 },
+  { key: 'orderType',           width: 130, minWidth: 100 },
+  { key: 'invoiceNo',           width: 130, minWidth: 100 },
+  { key: 'releaseStatus',       width: 140, minWidth: 110 },
+  { key: 'adjustmentInvoiceNo', width: 140, minWidth: 110 },
+  { key: 'shopReceived',        width: 110, minWidth: 90 },
+  { key: 'goodsCondition',      width: 180, minWidth: 130 },
+];
+
+export default function ReturnsClient({ initialOrders, initialReturns, reconciliation, initialInvStatus }: Props) {
   const router = useRouter();
   const supabase = createClient();
   const [orders] = useState<Order[]>(initialOrders);
   const [returns, setReturns] = useState<Return[]>(initialReturns);
+  const [invStatus, setInvStatus] = useState<InvStatus[]>(initialInvStatus);
   const [search, setSearch] = useState('');
-  const [filterType, setFilterType] = useState<'all' | 'THHT' | 'Giao hàng thất bại'>('all');
-  const [filterPlatform, setFilterPlatform] = useState<'all' | 'shopee' | 'tiktok'>('all');
-  const [filterShopReceived, setFilterShopReceived] = useState<'all' | 'yes' | 'no'>('all');
 
-  // Build lookup payout
+  const [colFilters, setColFilters] = useState<Record<string, ColFilter>>({});
+  const [openFilter, setOpenFilter] = useState<string | null>(null);
+
+  const { cols, setWidth, reset } = useResizableCols('returns-col-widths', DEFAULT_COLS);
+  const colW = (k: string) => cols.find(c => c.key === k)?.width || 100;
+
   const payoutMap = useMemo(() => {
     const m = new Map<string, number>();
     reconciliation.forEach(r => m.set(r.order_id, r.shopee_payout));
     return m;
   }, [reconciliation]);
 
-  // Build lookup returns
   const returnMap = useMemo(() => {
     const m = new Map<string, Return>();
     returns.forEach(r => m.set(r.order_id, r));
     return m;
   }, [returns]);
 
-  // Lọc các đơn THHT hoặc Đã hủy do giao hàng thất bại
-  // Dedupe theo order_id — lấy dòng chính (orderValue cao nhất)
+  const invStatusMap = useMemo(() => {
+    const m = new Map<string, InvStatus>();
+    invStatus.forEach(r => m.set(r.order_id, r));
+    return m;
+  }, [invStatus]);
+
   const rows: Row[] = useMemo(() => {
-    // Group theo order_id
     const byOrderId = new Map<string, Order[]>();
     orders.forEach(o => {
       const arr = byOrderId.get(o.order_id) || [];
@@ -70,7 +107,6 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
 
     const result: Row[] = [];
     byOrderId.forEach((lines, oid) => {
-      // Chọn dòng chính = orderValue cao nhất
       const orderValueOf = (l: Order) => (l.price_deal || 0) * (l.quantity || 1) - (l.shop_voucher || 0);
       let main = lines[0];
       let maxVal = orderValueOf(main);
@@ -78,7 +114,6 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
         const v = orderValueOf(l);
         if (v > maxVal) { main = l; maxVal = v; }
       }
-      // Tổng số lượng + tổng số lượng hoàn từ tất cả các dòng
       const totalQty = lines.reduce((s, l) => s + (l.quantity || 1), 0);
       const totalReturnedQty = lines.reduce((s, l) => s + (l.returned_qty || 0), 0);
 
@@ -86,16 +121,16 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
       const cancelReason = (main.cancel_reason || '').trim();
       const isTHHT = !!refundStatus;
       const isFailedDelivery = !isTHHT && /giao hàng thất bại/i.test(cancelReason);
-      // Detect THHT cho TikTok: status Hoàn thành + Sàn TT âm
       const st = shortStatus(main.status || '');
       const payout = payoutMap.get(oid) ?? null;
       const isTHHTTiktok = main.platform === 'tiktok'
         && (st.text === 'Hoàn thành')
         && payout !== null && payout < 0;
 
-      if (!isTHHT && !isFailedDelivery && !isTHHTTiktok) return; // bỏ qua đơn bình thường
+      if (!isTHHT && !isFailedDelivery && !isTHHTTiktok) return;
 
       const r = returnMap.get(oid);
+      const inv = invStatusMap.get(oid);
       result.push({
         o: main,
         date: main.date_order || '',
@@ -113,37 +148,102 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
         shopeePayout: payout,
         shopReceived: r?.shop_received || false,
         goodsCondition: r?.goods_condition || '',
+        invoiceNo: inv?.invoice_no || '',
+        releaseStatus: inv?.release_status || '',
+        adjustmentInvoiceNo: inv?.adjustment_invoice_no || '',
       });
     });
 
-    // Sort theo date_order DESC
     result.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
     return result;
-  }, [orders, payoutMap, returnMap]);
+  }, [orders, payoutMap, returnMap, invStatusMap]);
 
-  // Apply filters
-  const filtered = useMemo(() => {
-    return rows.filter(r => {
-      if (filterType !== 'all' && r.orderType !== filterType) return false;
-      if (filterPlatform !== 'all' && r.o.platform !== filterPlatform) return false;
-      if (filterShopReceived === 'yes' && !r.shopReceived) return false;
-      if (filterShopReceived === 'no' && r.shopReceived) return false;
-      if (search) {
-        const q = search.toLowerCase();
-        if (!r.orderId.toLowerCase().includes(q)
-          && !r.productName.toLowerCase().includes(q)
-          && !r.sku.toLowerCase().includes(q)) return false;
-      }
-      return true;
+  const uniqueValues = useMemo(() => {
+    const platforms = new Set<string>();
+    const skus = new Set<string>();
+    const refundStatuses = new Set<string>();
+    const orderTypes = new Set<string>();
+    const releaseStatuses = new Set<string>();
+    rows.forEach(r => {
+      platforms.add(r.platform);
+      skus.add(r.sku || '(trống)');
+      refundStatuses.add(r.refundStatus || '(trống)');
+      orderTypes.add(r.orderType);
+      releaseStatuses.add(r.releaseStatus || '(trống)');
     });
-  }, [rows, filterType, filterPlatform, filterShopReceived, search]);
+    return { platforms, skus, refundStatuses, orderTypes, releaseStatuses };
+  }, [rows]);
 
-  // Toggle "Shop đã nhận" + save vào DB
+  const filtered = useMemo(() => {
+    let list = rows;
+    if (search) {
+      const q = norm(search);
+      list = list.filter(r =>
+        norm(r.orderId).includes(q) || norm(r.productName).includes(q) || norm(r.sku).includes(q)
+      );
+    }
+    const cf = colFilters;
+    if (Object.keys(cf).length > 0) {
+      const matchList = (key: string, val: string) => {
+        const f = cf[key];
+        if (!f || f.type !== 'list' || f.selected.size === 0) return true;
+        return f.selected.has(val || '(trống)');
+      };
+      const matchText = (key: string, val: string) => {
+        const f = cf[key];
+        if (!f || f.type !== 'list' || f.selected.size === 0) return true;
+        const q = Array.from(f.selected)[0];
+        return norm(val).includes(norm(q));
+      };
+      const matchNum = (key: string, val: number) => {
+        const f = cf[key];
+        if (!f || f.type !== 'number') return true;
+        if (f.min !== undefined && val < f.min) return false;
+        if (f.max !== undefined && val > f.max) return false;
+        return true;
+      };
+      const matchDate = (key: string, dateStr: string | null | undefined) => {
+        const f = cf[key];
+        if (!f || f.type !== 'date') return true;
+        if (!dateStr) return false;
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return false;
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        const ymd = `${y}-${m}-${day}`;
+        if (f.from && ymd < f.from) return false;
+        if (f.to && ymd > f.to) return false;
+        return true;
+      };
+
+      list = list.filter(r => {
+        if (!matchDate('date', r.date)) return false;
+        if (!matchList('platform', r.platform)) return false;
+        if (!matchText('orderId', r.orderId)) return false;
+        if (!matchText('product', r.productName)) return false;
+        if (!matchList('sku', r.sku || '(trống)')) return false;
+        if (!matchNum('price', r.price)) return false;
+        if (!matchNum('quantity', r.quantity)) return false;
+        if (!matchNum('orderValue', r.orderValue)) return false;
+        if (!matchList('refundStatus', r.refundStatus || '(trống)')) return false;
+        if (!matchNum('returnedQty', r.returnedQty)) return false;
+        if (!matchList('orderType', r.orderType)) return false;
+        if (!matchText('invoiceNo', r.invoiceNo)) return false;
+        if (!matchList('releaseStatus', r.releaseStatus || '(trống)')) return false;
+        if (!matchText('adjustmentInvoiceNo', r.adjustmentInvoiceNo)) return false;
+        if (!matchList('shopReceived', r.shopReceived ? 'Đã nhận' : 'Chưa nhận')) return false;
+        if (!matchText('goodsCondition', r.goodsCondition)) return false;
+        return true;
+      });
+    }
+    return list;
+  }, [rows, search, colFilters]);
+
   const toggleShopReceived = async (orderId: string, current: boolean) => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
     const newVal = !current;
-
     const existing = returns.find(r => r.order_id === orderId);
     if (existing) {
       const { error } = await supabase
@@ -151,19 +251,18 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
         .update({ shop_received: newVal })
         .eq('user_id', user.id)
         .eq('order_id', orderId);
-      if (error) { alert('Lỗi: ' + error.message); return; }
+      if (error) { window.alert('Lỗi: ' + error.message); return; }
       setReturns(prev => prev.map(r => r.order_id === orderId ? { ...r, shop_received: newVal } : r));
     } else {
       const { data, error } = await supabase
         .from('returns')
         .insert({ user_id: user.id, order_id: orderId, shop_received: newVal })
         .select().single();
-      if (error) { alert('Lỗi: ' + error.message); return; }
+      if (error) { window.alert('Lỗi: ' + error.message); return; }
       if (data) setReturns(prev => [...prev, data as Return]);
     }
   };
 
-  // Update "Tình trạng hàng hoàn"
   const updateCondition = async (orderId: string, newCondition: string) => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
@@ -174,19 +273,40 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
         .update({ goods_condition: newCondition })
         .eq('user_id', user.id)
         .eq('order_id', orderId);
-      if (error) { alert('Lỗi: ' + error.message); return; }
+      if (error) { window.alert('Lỗi: ' + error.message); return; }
       setReturns(prev => prev.map(r => r.order_id === orderId ? { ...r, goods_condition: newCondition } : r));
     } else {
       const { data, error } = await supabase
         .from('returns')
         .insert({ user_id: user.id, order_id: orderId, goods_condition: newCondition })
         .select().single();
-      if (error) { alert('Lỗi: ' + error.message); return; }
+      if (error) { window.alert('Lỗi: ' + error.message); return; }
       if (data) setReturns(prev => [...prev, data as Return]);
     }
   };
 
-  // Xuất Excel
+  const updateAdjustmentInvoiceNo = async (orderId: string, newVal: string) => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    const existing = invStatus.find(r => r.order_id === orderId);
+    if (existing) {
+      const { error } = await supabase
+        .from('invoice_status')
+        .update({ adjustment_invoice_no: newVal })
+        .eq('user_id', user.id)
+        .eq('order_id', orderId);
+      if (error) { window.alert('Lỗi: ' + error.message); return; }
+      setInvStatus(prev => prev.map(r => r.order_id === orderId ? { ...r, adjustment_invoice_no: newVal } : r));
+    } else {
+      const { data, error } = await supabase
+        .from('invoice_status')
+        .insert({ user_id: user.id, order_id: orderId, adjustment_invoice_no: newVal })
+        .select().single();
+      if (error) { window.alert('Lỗi: ' + error.message); return; }
+      if (data) setInvStatus(prev => [...prev, data as InvStatus]);
+    }
+  };
+
   const handleExport = () => {
     const data = filtered.map(r => ({
       'Ngày đặt': fmtDate(r.date),
@@ -197,11 +317,12 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
       'Giá bán': r.price,
       'SL': r.quantity,
       'Giá trị ĐH': r.orderValue,
-      'Trạng thái THHT': r.refundStatus,
+      'TT THHT': r.refundStatus,
       'SL hoàn': r.returnedQty,
-      'Loại': r.orderType,
-      'Lý do hủy': r.cancelReason,
-      'Sàn TT': r.shopeePayout,
+      'Loại đơn': r.orderType,
+      'Số HĐ': r.invoiceNo,
+      'TT phát hành HĐ': r.releaseStatus,
+      'Số HĐ điều chỉnh': r.adjustmentInvoiceNo,
       'Shop đã nhận': r.shopReceived ? 'Có' : 'Chưa',
       'Tình trạng hàng hoàn': r.goodsCondition,
     }));
@@ -211,25 +332,24 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
     XLSX.writeFile(wb, `tra-hang-${Date.now()}.xlsx`);
   };
 
-  // KPI tổng
   const stats = useMemo(() => {
-    let thht = 0, failedDelivery = 0, totalValue = 0, totalReceived = 0, totalUnreceived = 0;
+    let thht = 0, failedDelivery = 0, totalReceived = 0, totalUnreceived = 0;
     rows.forEach(r => {
       if (r.orderType === 'THHT') thht++; else failedDelivery++;
-      totalValue += r.orderValue;
       if (r.shopReceived) totalReceived++; else totalUnreceived++;
     });
-    return { thht, failedDelivery, totalValue, totalReceived, totalUnreceived };
+    return { thht, failedDelivery, totalReceived, totalUnreceived };
   }, [rows]);
 
+  const totalWidth = cols.reduce((s, c) => s + c.width, 0);
+
   return (
-    <div className="p-6 max-w-[1600px] mx-auto">
+    <div className="fade-in w-full">
       <h1 className="text-2xl font-bold mb-1">Đơn hủy / Trả hàng</h1>
       <p className="text-sm text-gray-500 mb-5">
         Theo dõi các đơn THHT (Trả hàng/Hoàn tiền) và đơn hủy do giao hàng thất bại
       </p>
 
-      {/* KPI cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
         <div className="bg-white border border-gray-200 rounded-lg p-4">
           <div className="text-xs text-gray-500 mb-1">Tổng đơn THHT</div>
@@ -249,23 +369,7 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
         </div>
       </div>
 
-      {/* Toolbar */}
       <div className="flex flex-wrap gap-3 mb-4 items-center">
-        <select className="input" value={filterType} onChange={e => setFilterType(e.target.value as any)}>
-          <option value="all">Tất cả loại</option>
-          <option value="THHT">THHT</option>
-          <option value="Giao hàng thất bại">Giao hàng thất bại</option>
-        </select>
-        <select className="input" value={filterPlatform} onChange={e => setFilterPlatform(e.target.value as any)}>
-          <option value="all">Tất cả sàn</option>
-          <option value="shopee">Shopee</option>
-          <option value="tiktok">TikTok</option>
-        </select>
-        <select className="input" value={filterShopReceived} onChange={e => setFilterShopReceived(e.target.value as any)}>
-          <option value="all">Tất cả trạng thái nhận</option>
-          <option value="yes">Đã nhận</option>
-          <option value="no">Chưa nhận</option>
-        </select>
         <div className="relative flex-1 min-w-[200px] max-w-[400px]">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input className="input pl-9 w-full" placeholder="Tìm mã đơn, SP, SKU..."
@@ -274,88 +378,149 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
         <button className="btn btn-secondary" onClick={handleExport}>
           <Download size={15} /> Xuất Excel
         </button>
+        <button className="btn btn-secondary" onClick={reset}>Reset cột</button>
+        {Object.keys(colFilters).length > 0 && (
+          <button className="btn btn-secondary" onClick={() => setColFilters({})}>
+            Xóa lọc ({Object.keys(colFilters).length})
+          </button>
+        )}
       </div>
 
-      {/* Table */}
-      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b border-gray-200">
-              <tr>
-                <th className="text-left px-3 py-2 font-semibold text-xs text-gray-600">Ngày đặt</th>
-                <th className="text-left px-3 py-2 font-semibold text-xs text-gray-600">Sàn</th>
-                <th className="text-left px-3 py-2 font-semibold text-xs text-gray-600">Mã đơn</th>
-                <th className="text-left px-3 py-2 font-semibold text-xs text-gray-600">Sản phẩm</th>
-                <th className="text-left px-3 py-2 font-semibold text-xs text-gray-600">SKU</th>
-                <th className="text-right px-3 py-2 font-semibold text-xs text-gray-600">Giá bán</th>
-                <th className="text-center px-3 py-2 font-semibold text-xs text-gray-600">SL</th>
-                <th className="text-right px-3 py-2 font-semibold text-xs text-gray-600">Giá trị ĐH</th>
-                <th className="text-left px-3 py-2 font-semibold text-xs text-gray-600">TT THHT</th>
-                <th className="text-center px-3 py-2 font-semibold text-xs text-gray-600">SL hoàn</th>
-                <th className="text-left px-3 py-2 font-semibold text-xs text-gray-600">Loại đơn</th>
-                <th className="text-center px-3 py-2 font-semibold text-xs text-gray-600">Shop đã nhận</th>
-                <th className="text-left px-3 py-2 font-semibold text-xs text-gray-600">Tình trạng hàng hoàn</th>
+      <div className="card !p-0 overflow-x-auto">
+        <table className="tbl orders-tbl" style={{ width: totalWidth }}>
+          <colgroup>
+            {cols.map(c => <col key={c.key} style={{ width: c.width }} />)}
+          </colgroup>
+          <thead><tr>
+            <ColHeader label="Ngày đặt" colKey="date" width={colW('date')} onResize={w => setWidth('date', w)}
+              filterable filterType="date"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
+            <ColHeader label="Sàn" colKey="platform" width={colW('platform')} onResize={w => setWidth('platform', w)}
+              filterable filterType="list" filterValues={Array.from(uniqueValues.platforms)}
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
+            <ColHeader label="Mã đơn" colKey="orderId" width={colW('orderId')} onResize={w => setWidth('orderId', w)}
+              filterable filterType="text"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
+            <ColHeader label="Sản phẩm" colKey="product" width={colW('product')} onResize={w => setWidth('product', w)}
+              filterable filterType="text"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
+            <ColHeader label="SKU" colKey="sku" width={colW('sku')} onResize={w => setWidth('sku', w)}
+              filterable filterType="list" filterValues={Array.from(uniqueValues.skus)}
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
+            <ColHeader label="Giá bán" colKey="price" width={colW('price')} onResize={w => setWidth('price', w)} align="right"
+              filterable filterType="number"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
+            <ColHeader label="SL" colKey="quantity" width={colW('quantity')} onResize={w => setWidth('quantity', w)} align="right"
+              filterable filterType="number"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
+            <ColHeader label="Giá trị ĐH" colKey="orderValue" width={colW('orderValue')} onResize={w => setWidth('orderValue', w)} align="right"
+              filterable filterType="number"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
+            <ColHeader label="TT THHT" colKey="refundStatus" width={colW('refundStatus')} onResize={w => setWidth('refundStatus', w)}
+              filterable filterType="list" filterValues={Array.from(uniqueValues.refundStatuses)}
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
+            <ColHeader label="SL hoàn" colKey="returnedQty" width={colW('returnedQty')} onResize={w => setWidth('returnedQty', w)} align="right"
+              filterable filterType="number"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
+            <ColHeader label="Loại đơn" colKey="orderType" width={colW('orderType')} onResize={w => setWidth('orderType', w)}
+              filterable filterType="list" filterValues={Array.from(uniqueValues.orderTypes)}
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
+            <ColHeader label="Số HĐ" colKey="invoiceNo" width={colW('invoiceNo')} onResize={w => setWidth('invoiceNo', w)}
+              filterable filterType="text"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
+            <ColHeader label="TT phát hành HĐ" colKey="releaseStatus" width={colW('releaseStatus')} onResize={w => setWidth('releaseStatus', w)}
+              filterable filterType="list" filterValues={Array.from(uniqueValues.releaseStatuses)}
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
+            <ColHeader label="Số HĐ điều chỉnh" colKey="adjustmentInvoiceNo" width={colW('adjustmentInvoiceNo')} onResize={w => setWidth('adjustmentInvoiceNo', w)}
+              filterable filterType="text"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
+            <ColHeader label="Shop đã nhận" colKey="shopReceived" width={colW('shopReceived')} onResize={w => setWidth('shopReceived', w)}
+              filterable filterType="list" filterValues={['Đã nhận', 'Chưa nhận']}
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
+            <ColHeader label="Tình trạng hàng hoàn" colKey="goodsCondition" width={colW('goodsCondition')} onResize={w => setWidth('goodsCondition', w)}
+              filterable filterType="text"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
+          </tr></thead>
+          <tbody>
+            {filtered.length === 0 && (
+              <tr><td colSpan={16} className="text-center text-gray-400 py-12">Không có đơn nào</td></tr>
+            )}
+            {filtered.map(r => (
+              <tr key={r.orderId}>
+                <td className="text-xs">{fmtDate(r.date)}</td>
+                <td>
+                  <span className={`tag ${tagClass(r.platform === 'Shopee' ? 'shopee' : 'tiktok')}`}>{r.platform}</span>
+                </td>
+                <td className="font-medium text-xs">{r.orderId}</td>
+                <td>
+                  <div className="truncate" title={r.productName}>{r.productName || '-'}</div>
+                </td>
+                <td className="text-xs">{r.sku || '-'}</td>
+                <td className="text-right">{fmt(r.price)}</td>
+                <td className="text-right">{r.quantity}</td>
+                <td className="text-right font-medium">{fmt(r.orderValue)}</td>
+                <td className="text-xs">
+                  {r.refundStatus
+                    ? <span className="tag bg-red-100 text-red-700">{r.refundStatus}</span>
+                    : <span className="text-gray-300">—</span>}
+                </td>
+                <td className="text-right">{r.returnedQty || <span className="text-gray-300">—</span>}</td>
+                <td>
+                  <span className={`tag ${r.orderType === 'THHT' ? 'bg-red-100 text-red-700' : 'bg-orange-100 text-orange-700'}`}>
+                    {r.orderType}
+                  </span>
+                </td>
+                <td className="text-xs font-mono">
+                  {r.invoiceNo || <span className="text-gray-300">—</span>}
+                </td>
+                <td>
+                  {r.releaseStatus
+                    ? <span className={`tag ${
+                        norm(r.releaseStatus).includes('đã phát hành') || norm(r.releaseStatus).includes('đã cấp mã')
+                          ? 'bg-green-100 text-green-700'
+                          : norm(r.releaseStatus).includes('hủy')
+                          ? 'bg-red-100 text-red-700'
+                          : 'bg-yellow-100 text-yellow-700'
+                      }`}>{r.releaseStatus}</span>
+                    : <span className="text-gray-300">—</span>}
+                </td>
+                <td>
+                  <input type="text" className="input input-sm w-full text-xs"
+                    placeholder="Nhập số HĐ ĐC..."
+                    defaultValue={r.adjustmentInvoiceNo}
+                    onBlur={e => {
+                      const v = e.target.value.trim();
+                      if (v !== r.adjustmentInvoiceNo) updateAdjustmentInvoiceNo(r.orderId, v);
+                    }}
+                  />
+                </td>
+                <td className="text-center">
+                  <button
+                    onClick={() => toggleShopReceived(r.orderId, r.shopReceived)}
+                    className={`inline-flex items-center justify-center w-6 h-6 rounded border ${
+                      r.shopReceived
+                        ? 'bg-green-500 border-green-500 text-white'
+                        : 'bg-white border-gray-300 hover:border-gray-400'
+                    }`}
+                    title={r.shopReceived ? 'Đã nhận - click để bỏ' : 'Chưa nhận - click để đánh dấu'}
+                  >
+                    {r.shopReceived ? <Check size={14} /> : null}
+                  </button>
+                </td>
+                <td>
+                  <input type="text" className="input input-sm w-full text-xs"
+                    placeholder="Vd: Còn mới, Hỏng, Thiếu..."
+                    defaultValue={r.goodsCondition}
+                    onBlur={e => {
+                      const v = e.target.value.trim();
+                      if (v !== r.goodsCondition) updateCondition(r.orderId, v);
+                    }}
+                  />
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {filtered.length === 0 && (
-                <tr><td colSpan={13} className="text-center py-8 text-gray-400">Không có đơn nào</td></tr>
-              )}
-              {filtered.map((r) => (
-                <tr key={r.orderId} className="border-b border-gray-100 hover:bg-gray-50">
-                  <td className="px-3 py-2 text-xs">{fmtDate(r.date)}</td>
-                  <td className="px-3 py-2">
-                    <span className={`tag ${tagClass(r.platform === 'Shopee' ? 'shopee' : 'tiktok')}`}>
-                      {r.platform}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 font-mono text-xs">{r.orderId}</td>
-                  <td className="px-3 py-2 max-w-[200px] truncate" title={r.productName}>{r.productName}</td>
-                  <td className="px-3 py-2 font-mono text-xs">{r.sku}</td>
-                  <td className="px-3 py-2 text-right">{fmt(r.price)}</td>
-                  <td className="px-3 py-2 text-center">{r.quantity}</td>
-                  <td className="px-3 py-2 text-right font-semibold">{fmt(r.orderValue)}</td>
-                  <td className="px-3 py-2 text-xs">
-                    {r.refundStatus && (
-                      <span className="tag bg-red-100 text-red-700">{r.refundStatus}</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 text-center">{r.returnedQty || '—'}</td>
-                  <td className="px-3 py-2">
-                    <span className={`tag ${r.orderType === 'THHT' ? 'bg-red-100 text-red-700' : 'bg-orange-100 text-orange-700'}`}>
-                      {r.orderType}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-center">
-                    <button
-                      onClick={() => toggleShopReceived(r.orderId, r.shopReceived)}
-                      className={`inline-flex items-center justify-center w-6 h-6 rounded border ${
-                        r.shopReceived
-                          ? 'bg-green-500 border-green-500 text-white'
-                          : 'bg-white border-gray-300 hover:border-gray-400'
-                      }`}
-                      title={r.shopReceived ? 'Đã nhận - click để bỏ' : 'Chưa nhận - click để đánh dấu'}
-                    >
-                      {r.shopReceived ? <Check size={14} /> : null}
-                    </button>
-                  </td>
-                  <td className="px-3 py-2">
-                    <input
-                      type="text"
-                      className="input input-sm w-full"
-                      placeholder="Vd: Còn mới, Hỏng, Thiếu..."
-                      defaultValue={r.goodsCondition}
-                      onBlur={e => {
-                        const newVal = e.target.value.trim();
-                        if (newVal !== r.goodsCondition) updateCondition(r.orderId, newVal);
-                      }}
-                    />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+            ))}
+          </tbody>
+        </table>
       </div>
 
       <div className="mt-3 text-xs text-gray-500">

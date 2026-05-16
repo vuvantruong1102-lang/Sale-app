@@ -7,16 +7,18 @@ export const revalidate = 0;
 
 export default async function ReturnsPage() {
   const supabase = createClient();
-  const [orders, returns, reconciliation] = await Promise.all([
+  const [orders, returns, reconciliation, invStatus] = await Promise.all([
     fetchAll(supabase as any, 'orders', { orderBy: 'date_order', ascending: false }),
     fetchAll(supabase as any, 'returns', { orderBy: null }),
     fetchAll(supabase as any, 'reconciliation', { orderBy: null }),
+    fetchAll(supabase as any, 'invoice_status', { orderBy: null }),
   ]);
   return (
     <ReturnsClient
       initialOrders={orders as any[]}
       initialReturns={returns as any[]}
       reconciliation={reconciliation as any[]}
+      initialInvStatus={invStatus as any[]}
     />
   );
 }
