@@ -890,6 +890,10 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         const c_dateOrder = findCol(headers, 'Ngày đặt hàng', 'Order Time');
         const c_dateShip = findCol(headers, 'Ngày gửi hàng', 'Ship Time');
         const c_dateComplete = findCol(headers, 'Thời gian hoàn thành đơn hàng', 'Completed Time');
+        // Phân hệ Đơn hủy/Trả hàng
+        const c_refundStatus = findCol(headers, 'Trạng thái Trả hàng/Hoàn tiền', 'Return/Refund Status');
+        const c_cancelReason = findCol(headers, 'Lý do hủy', 'Cancellation Reason');
+        const c_returnedQty = findCol(headers, 'Số lượng sản phẩm được hoàn trả', 'Returned Quantity');
 
         if (!c_id) {
           setAlert({ type: 'error', text: `File "${f.name}" không có cột Mã đơn hàng` });
@@ -930,6 +934,10 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
             date_order: toIso(r[c_dateOrder!]),
             date_ship: toIso(r[c_dateShip!]),
             date_complete: toIso(r[c_dateComplete!]),
+            // Phân hệ Đơn hủy/Trả hàng
+            refund_status: c_refundStatus ? String(r[c_refundStatus] ?? '').trim() : '',
+            cancel_reason: c_cancelReason ? String(r[c_cancelReason] ?? '').trim() : '',
+            returned_qty: c_returnedQty ? +(r[c_returnedQty] || 0) : 0,
           });
           total++;
         }
