@@ -7,6 +7,8 @@ import { Order } from '@/lib/types';
 import { createClient } from '@/lib/supabase/client';
 import { fmt, fmtDate, norm, shortStatus, tagClass, parseDate, inRange } from '@/lib/utils';
 import { useResizableCols, ResizeHandle, ColDef } from '@/lib/useResizableCols';
+import { fetchAll } from '@/lib/fetchAll';
+import { ColHeader, ColFilter } from '@/components/ColHeader';
 import {
   Upload, Download, ChevronLeft, ChevronRight, Search, RotateCcw, AlertTriangle,
 } from 'lucide-react';
@@ -32,23 +34,26 @@ type InvStatus = {
   invoice_status?: string;         // Cột H trong file (giữ để tham khảo)
   release_status?: string;         // TT phát hành HĐ (cột K)
   invoice_type?: string;
+  adjustment_invoice_no?: string;  // Số HĐ điều chỉnh (manual input)
 };
 
 const DEFAULT_COLS: ColDef[] = [
-  { key: 'date',           width: 120, minWidth: 90 },
-  { key: 'platform',       width: 80,  minWidth: 60 },
-  { key: 'orderId',        width: 140, minWidth: 100 },
-  { key: 'status',         width: 105, minWidth: 70 },
-  { key: 'product',        width: 280, minWidth: 120 },
-  { key: 'sku',            width: 95,  minWidth: 60 },
-  { key: 'quantity',       width: 70,  minWidth: 50 },
-  { key: 'price',          width: 100, minWidth: 80 },
-  { key: 'orderValue',     width: 110, minWidth: 80 },
-  { key: 'dateShip',       width: 120, minWidth: 90 },
-  { key: 'invoiceValue',   width: 120, minWidth: 90 },
-  { key: 'exportStatus',   width: 140, minWidth: 110 },  // Trạng thái xuất HĐ (đổi vị trí lên trước)
-  { key: 'releaseStatus',  width: 140, minWidth: 110 },  // TT phát hành HĐ (đổi vị trí xuống sau)
-  { key: 'warning',        width: 260, minWidth: 150 },
+  { key: 'date',                width: 120, minWidth: 90 },
+  { key: 'platform',            width: 80,  minWidth: 60 },
+  { key: 'orderId',             width: 140, minWidth: 100 },
+  { key: 'status',              width: 105, minWidth: 70 },
+  { key: 'product',             width: 260, minWidth: 120 },
+  { key: 'sku',                 width: 95,  minWidth: 60 },
+  { key: 'quantity',            width: 70,  minWidth: 50 },
+  { key: 'price',               width: 100, minWidth: 80 },
+  { key: 'orderValue',          width: 110, minWidth: 80 },
+  { key: 'dateShip',            width: 120, minWidth: 90 },
+  { key: 'invoiceValue',        width: 120, minWidth: 90 },
+  { key: 'exportStatus',        width: 140, minWidth: 110 },
+  { key: 'invoiceNo',           width: 130, minWidth: 100 }, // MỚI: Số HĐ
+  { key: 'releaseStatus',       width: 140, minWidth: 110 },
+  { key: 'adjustmentInvoiceNo', width: 140, minWidth: 110 }, // MỚI: Số HĐ điều chỉnh
+  { key: 'warning',             width: 240, minWidth: 150 },
 ];
 
 type Props = {
@@ -75,6 +80,11 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
   const [alert, setAlert] = useState<{ type: string; text: string } | null>(null);
   const misaFileRef = useRef<HTMLInputElement>(null);
   const statusFileRef = useRef<HTMLInputElement>(null);
+
+  // Per-column filters (giống trang Đơn hàng) — dùng shared component
+  // Text filter lưu vào 'list' với selected có 1 phần tử
+  const [colFilters, setColFilters] = useState<Record<string, ColFilter>>({});
+  const [openFilter, setOpenFilter] = useState<string | null>(null);
 
   const { cols, setWidth, reset } = useResizableCols('invoices-col-widths', DEFAULT_COLS);
   const colW = (k: string) => cols.find(c => c.key === k)?.width || 100;
@@ -218,6 +228,8 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         statusRec,
         hasShipped,
         isCancelled,
+        invoiceNo: statusRec?.invoice_no || '',
+        adjustmentInvoiceNo: statusRec?.adjustment_invoice_no || '',
       });
     });
     return rows;
@@ -233,6 +245,23 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
     }).length;
     const warnings = rowsWithCalc.filter(r => r.warnings.length > 0).length;
     return { total, issued, missing, warnings };
+  }, [rowsWithCalc]);
+
+  // Unique values cho list filter
+  const uniqueValues = useMemo(() => {
+    const platforms = new Set<string>();
+    const statuses = new Set<string>();
+    const skus = new Set<string>();
+    const exportStatuses = new Set<string>();
+    const releaseStatuses = new Set<string>();
+    rowsWithCalc.forEach(r => {
+      platforms.add(r.o.platform === 'shopee' ? 'Shopee' : 'TikTok');
+      statuses.add(r.statusText);
+      skus.add(r.o.sku || '(trống)');
+      exportStatuses.add(r.statusFinal.text);
+      releaseStatuses.add(r.releaseStatusText || '(trống)');
+    });
+    return { platforms, statuses, skus, exportStatuses, releaseStatuses };
   }, [rowsWithCalc]);
 
   // Filter
@@ -255,8 +284,66 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         norm(r.o.order_id).includes(q) || norm(r.o.product_name).includes(q) || norm(r.o.sku).includes(q)
       );
     }
+
+    // Per-column filters
+    const cf = colFilters;
+    if (Object.keys(cf).length > 0) {
+      const matchList = (key: string, val: string) => {
+        const f = cf[key];
+        if (!f || f.type !== 'list' || f.selected.size === 0) return true;
+        return f.selected.has(val || '(trống)');
+      };
+      const matchNum = (key: string, val: number) => {
+        const f = cf[key];
+        if (!f || f.type !== 'number') return true;
+        if (f.min !== undefined && val < f.min) return false;
+        if (f.max !== undefined && val > f.max) return false;
+        return true;
+      };
+      const matchText = (key: string, val: string) => {
+        const f = cf[key];
+        if (!f || f.type !== 'list' || f.selected.size === 0) return true;
+        // Text filter lưu trong list với 1 phần tử
+        const q = Array.from(f.selected)[0];
+        return norm(val).includes(norm(q));
+      };
+      const matchDate = (key: string, dateStr: string | null | undefined) => {
+        const f = cf[key];
+        if (!f || f.type !== 'date') return true;
+        if (!dateStr) return false;
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return false;
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        const ymd = `${y}-${m}-${day}`;
+        if (f.from && ymd < f.from) return false;
+        if (f.to && ymd > f.to) return false;
+        return true;
+      };
+
+      list = list.filter(r => {
+        if (!matchDate('date', r.o.date_order)) return false;
+        if (!matchList('platform', r.o.platform === 'shopee' ? 'Shopee' : 'TikTok')) return false;
+        if (!matchText('orderId', r.o.order_id)) return false;
+        if (!matchList('status', r.statusText)) return false;
+        if (!matchText('product', r.o.product_name || '')) return false;
+        if (!matchList('sku', r.o.sku || '(trống)')) return false;
+        if (!matchNum('quantity', r.totalQty)) return false;
+        if (!matchNum('price', r.price)) return false;
+        if (!matchNum('orderValue', r.orderValue)) return false;
+        if (!matchDate('dateShip', r.dateShip)) return false;
+        if (!matchNum('invoiceValue', r.invoiceValue || 0)) return false;
+        if (!matchList('exportStatus', r.statusFinal.text)) return false;
+        if (!matchText('invoiceNo', r.invoiceNo)) return false;
+        if (!matchList('releaseStatus', r.releaseStatusText || '(trống)')) return false;
+        if (!matchText('adjustmentInvoiceNo', r.adjustmentInvoiceNo)) return false;
+        return true;
+      });
+    }
+
     return list;
-  }, [rowsWithCalc, dateRange, dateFrom, dateTo, search, filterMode]);
+  }, [rowsWithCalc, dateRange, dateFrom, dateTo, search, filterMode, colFilters]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageRows = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -353,8 +440,8 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         text: `✓ Đã import ${payload.length} đơn xuất HĐ từ MISA • Có ${withExport} đơn có Giá trị xuất HĐ • ${withStatus} đơn có Trạng thái xuất HĐ`,
       });
 
-      const { data: fresh } = await supabase.from('misa_orders').select('*');
-      setMisa(fresh || []);
+      const fresh = await fetchAll(supabase as any, 'misa_orders', { orderBy: null });
+      setMisa(fresh);
       router.refresh();
     } catch (err: any) {
       setAlert({ type: 'error', text: 'Lỗi: ' + (err.message || err) });
@@ -438,6 +525,26 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
 
       const withRelease = payload.filter(p => p.release_status).length;
 
+      // Preserve adjustment_invoice_no đã có (manual input) — không ghi đè bằng null
+      const orderIds = payload.map(p => p.order_id);
+      const existingMap = new Map<string, string>();
+      const ID_BATCH = 100;
+      for (let i = 0; i < orderIds.length; i += ID_BATCH) {
+        const slice = orderIds.slice(i, i + ID_BATCH);
+        const { data: existing } = await supabase
+          .from('invoice_status')
+          .select('order_id, adjustment_invoice_no')
+          .in('order_id', slice);
+        (existing || []).forEach((r: any) => {
+          if (r.adjustment_invoice_no) existingMap.set(r.order_id, r.adjustment_invoice_no);
+        });
+      }
+      // Merge adjustment_invoice_no vào payload
+      payload.forEach((p: any) => {
+        const adj = existingMap.get(p.order_id);
+        if (adj) p.adjustment_invoice_no = adj;
+      });
+
       const BATCH = 500;
       for (let i = 0; i < payload.length; i += BATCH) {
         const slice = payload.slice(i, i + BATCH);
@@ -452,14 +559,38 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         text: `✓ Đã import ${payload.length} trạng thái HĐ • ${withRelease} đơn có TT phát hành HĐ`,
       });
 
-      const { data: fresh } = await supabase.from('invoice_status').select('*');
-      setInvStatus(fresh || []);
+      const fresh = await fetchAll(supabase as any, 'invoice_status', { orderBy: null });
+      setInvStatus(fresh);
       router.refresh();
     } catch (err: any) {
       setAlert({ type: 'error', text: 'Lỗi: ' + (err.message || err) });
     } finally {
       setImportingStatus(false);
       if (statusFileRef.current) statusFileRef.current.value = '';
+    }
+  };
+
+  // Cập nhật "Số HĐ điều chỉnh" (manual input) — lưu vào DB
+  const updateAdjustmentInvoiceNo = async (orderId: string, newVal: string) => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    const existing = invStatus.find(r => r.order_id === orderId);
+    if (existing) {
+      const { error } = await supabase
+        .from('invoice_status')
+        .update({ adjustment_invoice_no: newVal })
+        .eq('user_id', user.id)
+        .eq('order_id', orderId);
+      if (error) { window.alert('Lỗi: ' + error.message); return; }
+      setInvStatus(prev => prev.map(r => r.order_id === orderId ? { ...r, adjustment_invoice_no: newVal } : r));
+    } else {
+      // Chưa có record → tạo mới với chỉ field này
+      const { data, error } = await supabase
+        .from('invoice_status')
+        .insert({ user_id: user.id, order_id: orderId, adjustment_invoice_no: newVal })
+        .select().single();
+      if (error) { window.alert('Lỗi: ' + error.message); return; }
+      if (data) setInvStatus(prev => [...prev, data as InvStatus]);
     }
   };
 
@@ -478,7 +609,9 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       'Ngày gửi hàng': r.dateShip || '',
       'Giá trị xuất HĐ': r.invoiceValue ?? '',
       'Trạng thái xuất HĐ': r.statusFinal.text,
+      'Số HĐ': r.invoiceNo || '',
       'TT phát hành HĐ': r.releaseStatusText || '',
+      'Số HĐ điều chỉnh': r.adjustmentInvoiceNo || '',
       'Cảnh báo': r.warnings.join('; '),
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
@@ -488,7 +621,7 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
   };
 
   return (
-    <div className="fade-in">
+    <div className="fade-in w-full">
       <h1 className="text-2xl font-bold mb-1">Hóa đơn</h1>
       <p className="text-sm text-gray-500 mb-5">
         Kiểm tra MISA đã xuất HĐ đúng và đầy đủ chưa — đơn đã gửi hàng phải có HĐ với giá trị đúng
@@ -588,24 +721,56 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
             {cols.map(c => <col key={c.key} style={{ width: c.width }} />)}
           </colgroup>
           <thead><tr>
-            <th>Ngày đặt<ResizeHandle currentWidth={colW('date')} onResize={w => setWidth('date', w)} /></th>
-            <th>Sàn<ResizeHandle currentWidth={colW('platform')} onResize={w => setWidth('platform', w)} /></th>
-            <th>Mã đơn<ResizeHandle currentWidth={colW('orderId')} onResize={w => setWidth('orderId', w)} /></th>
-            <th>Trạng thái<ResizeHandle currentWidth={colW('status')} onResize={w => setWidth('status', w)} /></th>
-            <th>Sản phẩm<ResizeHandle currentWidth={colW('product')} onResize={w => setWidth('product', w)} /></th>
-            <th>SKU<ResizeHandle currentWidth={colW('sku')} onResize={w => setWidth('sku', w)} /></th>
-            <th className="text-right">SL<ResizeHandle currentWidth={colW('quantity')} onResize={w => setWidth('quantity', w)} /></th>
-            <th className="text-right">Giá bán<ResizeHandle currentWidth={colW('price')} onResize={w => setWidth('price', w)} /></th>
-            <th className="text-right">Giá trị ĐH<ResizeHandle currentWidth={colW('orderValue')} onResize={w => setWidth('orderValue', w)} /></th>
-            <th>Ngày gửi<ResizeHandle currentWidth={colW('dateShip')} onResize={w => setWidth('dateShip', w)} /></th>
-            <th className="text-right">Giá trị xuất HĐ<ResizeHandle currentWidth={colW('invoiceValue')} onResize={w => setWidth('invoiceValue', w)} /></th>
-            <th>Trạng thái xuất HĐ<ResizeHandle currentWidth={colW('exportStatus')} onResize={w => setWidth('exportStatus', w)} /></th>
-            <th>TT phát hành HĐ<ResizeHandle currentWidth={colW('releaseStatus')} onResize={w => setWidth('releaseStatus', w)} /></th>
+            <ColHeader label="Ngày đặt" colKey="date" width={colW('date')} onResize={w => setWidth('date', w)}
+              filterable filterType="date"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Sàn" colKey="platform" width={colW('platform')} onResize={w => setWidth('platform', w)}
+              filterable filterType="list" filterValues={Array.from(uniqueValues.platforms)}
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Mã đơn" colKey="orderId" width={colW('orderId')} onResize={w => setWidth('orderId', w)}
+              filterable filterType="text"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Trạng thái" colKey="status" width={colW('status')} onResize={w => setWidth('status', w)}
+              filterable filterType="list" filterValues={Array.from(uniqueValues.statuses)}
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Sản phẩm" colKey="product" width={colW('product')} onResize={w => setWidth('product', w)}
+              filterable filterType="text"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="SKU" colKey="sku" width={colW('sku')} onResize={w => setWidth('sku', w)}
+              filterable filterType="list" filterValues={Array.from(uniqueValues.skus)}
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="SL" colKey="quantity" width={colW('quantity')} onResize={w => setWidth('quantity', w)} align="right"
+              filterable filterType="number"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Giá bán" colKey="price" width={colW('price')} onResize={w => setWidth('price', w)} align="right"
+              filterable filterType="number"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Giá trị ĐH" colKey="orderValue" width={colW('orderValue')} onResize={w => setWidth('orderValue', w)} align="right"
+              filterable filterType="number"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Ngày gửi" colKey="dateShip" width={colW('dateShip')} onResize={w => setWidth('dateShip', w)}
+              filterable filterType="date"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Giá trị xuất HĐ" colKey="invoiceValue" width={colW('invoiceValue')} onResize={w => setWidth('invoiceValue', w)} align="right"
+              filterable filterType="number"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Trạng thái xuất HĐ" colKey="exportStatus" width={colW('exportStatus')} onResize={w => setWidth('exportStatus', w)}
+              filterable filterType="list" filterValues={Array.from(uniqueValues.exportStatuses)}
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Số HĐ" colKey="invoiceNo" width={colW('invoiceNo')} onResize={w => setWidth('invoiceNo', w)}
+              filterable filterType="text"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="TT phát hành HĐ" colKey="releaseStatus" width={colW('releaseStatus')} onResize={w => setWidth('releaseStatus', w)}
+              filterable filterType="list" filterValues={Array.from(uniqueValues.releaseStatuses)}
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Số HĐ điều chỉnh" colKey="adjustmentInvoiceNo" width={colW('adjustmentInvoiceNo')} onResize={w => setWidth('adjustmentInvoiceNo', w)}
+              filterable filterType="text"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
             <th>Cảnh báo</th>
           </tr></thead>
           <tbody>
             {pageRows.length === 0 && (
-              <tr><td colSpan={14} className="text-center text-gray-400 py-12">
+              <tr><td colSpan={16} className="text-center text-gray-400 py-12">
                 Không có dữ liệu
               </td></tr>
             )}
@@ -633,6 +798,9 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
                   <td>
                     <span className={`tag ${tagClass(r.statusFinal.color)}`}>{r.statusFinal.text}</span>
                   </td>
+                  <td className="text-xs font-mono">
+                    {r.invoiceNo || <span className="text-gray-300">—</span>}
+                  </td>
                   <td>
                     {r.releaseStatusText
                       ? <span className={`tag ${
@@ -643,6 +811,20 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
                             : 'bg-yellow-100 text-yellow-700'
                         }`}>{r.releaseStatusText}</span>
                       : <span className="text-gray-300">—</span>}
+                  </td>
+                  <td>
+                    <input
+                      type="text"
+                      className="input input-sm w-full text-xs"
+                      placeholder="Nhập số HĐ ĐC..."
+                      defaultValue={r.adjustmentInvoiceNo}
+                      onBlur={e => {
+                        const newVal = e.target.value.trim();
+                        if (newVal !== r.adjustmentInvoiceNo) {
+                          updateAdjustmentInvoiceNo(r.o.order_id, newVal);
+                        }
+                      }}
+                    />
                   </td>
                   <td>
                     {r.warnings.length === 0
