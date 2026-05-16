@@ -13,6 +13,7 @@ import { ColHeader, ColFilter } from '@/components/ColHeader';
 type InvStatus = {
   order_id: string;
   invoice_no?: string;
+  invoice_value?: number;
   release_status?: string;
   adjustment_invoice_no?: string;
 };
@@ -33,7 +34,7 @@ type Row = {
   sku: string;
   price: number;
   quantity: number;
-  orderValue: number;
+  invoiceValue: number | null;
   refundStatus: string;
   returnedQty: number;
   orderType: 'THHT' | 'Giao hàng thất bại';
@@ -54,7 +55,7 @@ const DEFAULT_COLS: ColDef[] = [
   { key: 'sku',                 width: 95,  minWidth: 60 },
   { key: 'price',               width: 100, minWidth: 80 },
   { key: 'quantity',            width: 70,  minWidth: 50 },
-  { key: 'orderValue',          width: 110, minWidth: 80 },
+  { key: 'invoiceValue',        width: 120, minWidth: 80 },
   { key: 'refundStatus',        width: 130, minWidth: 100 },
   { key: 'returnedQty',         width: 80,  minWidth: 60 },
   { key: 'orderType',           width: 130, minWidth: 100 },
@@ -107,6 +108,7 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
 
     const result: Row[] = [];
     byOrderId.forEach((lines, oid) => {
+      // Chọn dòng chính (giá trị ưu đãi cao nhất)
       const orderValueOf = (l: Order) => (l.price_deal || 0) * (l.quantity || 1) - (l.shop_voucher || 0);
       let main = lines[0];
       let maxVal = orderValueOf(main);
@@ -131,6 +133,8 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
 
       const r = returnMap.get(oid);
       const inv = invStatusMap.get(oid);
+      // Giá trị xuất HĐ = cột D file Hoa_don (invoice_status.invoice_value)
+      const invoiceValue = inv?.invoice_value ?? null;
       result.push({
         o: main,
         date: main.date_order || '',
@@ -140,7 +144,7 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
         sku: main.sku || '',
         price: main.price_deal || 0,
         quantity: totalQty,
-        orderValue: maxVal,
+        invoiceValue,
         refundStatus: refundStatus || (isTHHTTiktok ? 'THHT (TikTok)' : ''),
         returnedQty: totalReturnedQty,
         orderType: (isTHHT || isTHHTTiktok) ? 'THHT' : 'Giao hàng thất bại',
@@ -225,7 +229,7 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
         if (!matchList('sku', r.sku || '(trống)')) return false;
         if (!matchNum('price', r.price)) return false;
         if (!matchNum('quantity', r.quantity)) return false;
-        if (!matchNum('orderValue', r.orderValue)) return false;
+        if (!matchNum('invoiceValue', r.invoiceValue || 0)) return false;
         if (!matchList('refundStatus', r.refundStatus || '(trống)')) return false;
         if (!matchNum('returnedQty', r.returnedQty)) return false;
         if (!matchList('orderType', r.orderType)) return false;
@@ -316,7 +320,7 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
       'SKU': r.sku,
       'Giá bán': r.price,
       'SL': r.quantity,
-      'Giá trị ĐH': r.orderValue,
+      'Giá trị xuất HĐ': r.invoiceValue ?? '',
       'TT THHT': r.refundStatus,
       'SL hoàn': r.returnedQty,
       'Loại đơn': r.orderType,
@@ -413,7 +417,7 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
             <ColHeader label="SL" colKey="quantity" width={colW('quantity')} onResize={w => setWidth('quantity', w)} align="right"
               filterable filterType="number"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
-            <ColHeader label="Giá trị ĐH" colKey="orderValue" width={colW('orderValue')} onResize={w => setWidth('orderValue', w)} align="right"
+            <ColHeader label="Giá trị xuất HĐ" colKey="invoiceValue" width={colW('invoiceValue')} onResize={w => setWidth('invoiceValue', w)} align="right"
               filterable filterType="number"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
             <ColHeader label="TT THHT" colKey="refundStatus" width={colW('refundStatus')} onResize={w => setWidth('refundStatus', w)}
@@ -458,7 +462,9 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
                 <td className="text-xs">{r.sku || '-'}</td>
                 <td className="text-right">{fmt(r.price)}</td>
                 <td className="text-right">{r.quantity}</td>
-                <td className="text-right font-medium">{fmt(r.orderValue)}</td>
+                <td className="text-right font-medium">
+                  {r.invoiceValue !== null ? fmt(r.invoiceValue) : <span className="text-gray-300">—</span>}
+                </td>
                 <td className="text-xs">
                   {r.refundStatus
                     ? <span className="tag bg-red-100 text-red-700">{r.refundStatus}</span>
