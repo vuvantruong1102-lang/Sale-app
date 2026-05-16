@@ -45,6 +45,9 @@ type Row = {
   invoiceNo: string;
   releaseStatus: string;
   adjustmentInvoiceNo: string;
+  rowKey: string;           // unique key cho mỗi dòng SKU
+  isFirstOfOrder: boolean;  // true nếu là dòng đầu của đơn (để hiển thị các cột chung)
+  orderLineCount: number;   // tổng số dòng SKU của đơn (cho rowspan/display)
 };
 
 const DEFAULT_COLS: ColDef[] = [
@@ -107,18 +110,20 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
     });
 
     const result: Row[] = [];
-    byOrderId.forEach((lines, oid) => {
-      // Chọn dòng chính (giá trị ưu đãi cao nhất)
-      const orderValueOf = (l: Order) => (l.price_deal || 0) * (l.quantity || 1) - (l.shop_voucher || 0);
-      let main = lines[0];
-      let maxVal = orderValueOf(main);
-      for (const l of lines) {
-        const v = orderValueOf(l);
-        if (v > maxVal) { main = l; maxVal = v; }
-      }
-      const totalQty = lines.reduce((s, l) => s + (l.quantity || 1), 0);
-      const totalReturnedQty = lines.reduce((s, l) => s + (l.returned_qty || 0), 0);
+    // Sort các order_id theo date DESC để hiển thị đúng thứ tự
+    const orderEntries = Array.from(byOrderId.entries());
+    orderEntries.sort((a, b) => {
+      const da = a[1][0]?.date_order || '';
+      const db = b[1][0]?.date_order || '';
+      return db.localeCompare(da);
+    });
 
+    for (const [oid, lines] of orderEntries) {
+      // Chọn dòng chính (total_paid cao nhất) — để check status THHT
+      let main = lines[0];
+      for (const l of lines) {
+        if ((l.total_paid || 0) > (main.total_paid || 0)) main = l;
+      }
       const refundStatus = (main.refund_status || '').trim();
       const cancelReason = (main.cancel_reason || '').trim();
       const isTHHT = !!refundStatus;
@@ -129,36 +134,49 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
         && (st.text === 'Hoàn thành')
         && payout !== null && payout < 0;
 
-      if (!isTHHT && !isFailedDelivery && !isTHHTTiktok) return;
+      if (!isTHHT && !isFailedDelivery && !isTHHTTiktok) continue;
 
       const r = returnMap.get(oid);
       const inv = invStatusMap.get(oid);
-      // Giá trị xuất HĐ = cột D file Hoa_don (invoice_status.invoice_value)
       const invoiceValue = inv?.invoice_value ?? null;
-      result.push({
-        o: main,
-        date: main.date_order || '',
-        platform: main.platform === 'shopee' ? 'Shopee' : 'TikTok',
-        orderId: oid,
-        productName: main.product_name || '',
-        sku: main.sku || '',
-        price: main.price_deal || 0,
-        quantity: totalQty,
-        invoiceValue,
-        refundStatus: refundStatus || (isTHHTTiktok ? 'THHT (TikTok)' : ''),
-        returnedQty: totalReturnedQty,
-        orderType: (isTHHT || isTHHTTiktok) ? 'THHT' : 'Giao hàng thất bại',
-        cancelReason,
-        shopeePayout: payout,
-        shopReceived: r?.shop_received || false,
-        goodsCondition: r?.goods_condition || '',
-        invoiceNo: inv?.invoice_no || '',
-        releaseStatus: inv?.release_status || '',
-        adjustmentInvoiceNo: inv?.adjustment_invoice_no || '',
-      });
-    });
 
-    result.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+      // Sort lines: dòng có giá > 0 lên trước, dòng 0đ (quà tặng) xuống cuối
+      // Đảm bảo "dòng đầu" của đơn không phải dòng 0đ
+      const sortedLines = [...lines].sort((a, b) => {
+        const pa = a.price_deal || 0;
+        const pb = b.price_deal || 0;
+        return pb - pa;
+      });
+
+      sortedLines.forEach((line, idx) => {
+        const isFirst = idx === 0;
+        result.push({
+          o: line,
+          date: main.date_order || '',
+          platform: main.platform === 'shopee' ? 'Shopee' : 'TikTok',
+          orderId: oid,
+          productName: line.product_name || '',
+          sku: line.sku || '',
+          price: line.price_deal || 0,
+          quantity: line.quantity || 1,
+          invoiceValue,
+          refundStatus: refundStatus || (isTHHTTiktok ? 'THHT (TikTok)' : ''),
+          returnedQty: line.returned_qty || 0,
+          orderType: (isTHHT || isTHHTTiktok) ? 'THHT' : 'Giao hàng thất bại',
+          cancelReason,
+          shopeePayout: payout,
+          shopReceived: r?.shop_received || false,
+          goodsCondition: r?.goods_condition || '',
+          invoiceNo: inv?.invoice_no || '',
+          releaseStatus: inv?.release_status || '',
+          adjustmentInvoiceNo: inv?.adjustment_invoice_no || '',
+          rowKey: line.unique_key || `${oid}__${idx}`,
+          isFirstOfOrder: isFirst,
+          orderLineCount: sortedLines.length,
+        });
+      });
+    }
+
     return result;
   }, [orders, payoutMap, returnMap, invStatusMap]);
 
@@ -338,7 +356,9 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
 
   const stats = useMemo(() => {
     let thht = 0, failedDelivery = 0, totalReceived = 0, totalUnreceived = 0;
+    // Đếm 1 lần per order (chỉ dòng isFirstOfOrder)
     rows.forEach(r => {
+      if (!r.isFirstOfOrder) return;
       if (r.orderType === 'THHT') thht++; else failedDelivery++;
       if (r.shopReceived) totalReceived++; else totalUnreceived++;
     });
@@ -449,88 +469,113 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
             {filtered.length === 0 && (
               <tr><td colSpan={16} className="text-center text-gray-400 py-12">Không có đơn nào</td></tr>
             )}
-            {filtered.map(r => (
-              <tr key={r.orderId}>
-                <td className="text-xs">{fmtDate(r.date)}</td>
-                <td>
-                  <span className={`tag ${tagClass(r.platform === 'Shopee' ? 'shopee' : 'tiktok')}`}>{r.platform}</span>
-                </td>
-                <td className="font-medium text-xs">{r.orderId}</td>
-                <td>
-                  <div className="truncate" title={r.productName}>{r.productName || '-'}</div>
-                </td>
-                <td className="text-xs">{r.sku || '-'}</td>
-                <td className="text-right">{fmt(r.price)}</td>
-                <td className="text-right">{r.quantity}</td>
-                <td className="text-right font-medium">
-                  {r.invoiceValue !== null ? fmt(r.invoiceValue) : <span className="text-gray-300">—</span>}
-                </td>
-                <td className="text-xs">
-                  {r.refundStatus
-                    ? <span className="tag bg-red-100 text-red-700">{r.refundStatus}</span>
-                    : <span className="text-gray-300">—</span>}
-                </td>
-                <td className="text-right">{r.returnedQty || <span className="text-gray-300">—</span>}</td>
-                <td>
-                  <span className={`tag ${r.orderType === 'THHT' ? 'bg-red-100 text-red-700' : 'bg-orange-100 text-orange-700'}`}>
-                    {r.orderType}
-                  </span>
-                </td>
-                <td className="text-xs font-mono">
-                  {r.invoiceNo || <span className="text-gray-300">—</span>}
-                </td>
-                <td>
-                  {r.releaseStatus
-                    ? <span className={`tag ${
-                        norm(r.releaseStatus).includes('đã phát hành') || norm(r.releaseStatus).includes('đã cấp mã')
-                          ? 'bg-green-100 text-green-700'
-                          : norm(r.releaseStatus).includes('hủy')
-                          ? 'bg-red-100 text-red-700'
-                          : 'bg-yellow-100 text-yellow-700'
-                      }`}>{r.releaseStatus}</span>
-                    : <span className="text-gray-300">—</span>}
-                </td>
-                <td>
-                  <input type="text" className="input input-sm w-full text-xs"
-                    placeholder="Nhập số HĐ ĐC..."
-                    defaultValue={r.adjustmentInvoiceNo}
-                    onBlur={e => {
-                      const v = e.target.value.trim();
-                      if (v !== r.adjustmentInvoiceNo) updateAdjustmentInvoiceNo(r.orderId, v);
-                    }}
-                  />
-                </td>
-                <td className="text-center">
-                  <button
-                    onClick={() => toggleShopReceived(r.orderId, r.shopReceived)}
-                    className={`inline-flex items-center justify-center w-6 h-6 rounded border ${
-                      r.shopReceived
-                        ? 'bg-green-500 border-green-500 text-white'
-                        : 'bg-white border-gray-300 hover:border-gray-400'
-                    }`}
-                    title={r.shopReceived ? 'Đã nhận - click để bỏ' : 'Chưa nhận - click để đánh dấu'}
-                  >
-                    {r.shopReceived ? <Check size={14} /> : null}
-                  </button>
-                </td>
-                <td>
-                  <input type="text" className="input input-sm w-full text-xs"
-                    placeholder="Vd: Còn mới, Hỏng, Thiếu..."
-                    defaultValue={r.goodsCondition}
-                    onBlur={e => {
-                      const v = e.target.value.trim();
-                      if (v !== r.goodsCondition) updateCondition(r.orderId, v);
-                    }}
-                  />
-                </td>
-              </tr>
-            ))}
+            {filtered.map(r => {
+              const showOrderCols = r.isFirstOfOrder;
+              // Dòng tiếp theo của cùng đơn → bo phía trên nhạt hơn để gộp nhóm trực quan
+              const rowClass = showOrderCols
+                ? (r.orderLineCount > 1 ? 'border-t-2 border-t-gray-200' : '')
+                : 'border-t-transparent';
+              return (
+                <tr key={r.rowKey} className={rowClass}>
+                  <td className="text-xs">{showOrderCols ? fmtDate(r.date) : ''}</td>
+                  <td>
+                    {showOrderCols
+                      ? <span className={`tag ${tagClass(r.platform === 'Shopee' ? 'shopee' : 'tiktok')}`}>{r.platform}</span>
+                      : null}
+                  </td>
+                  <td className="font-medium text-xs">{showOrderCols ? r.orderId : ''}</td>
+                  <td>
+                    <div className="truncate" title={r.productName}>{r.productName || '-'}</div>
+                  </td>
+                  <td className="text-xs">{r.sku || '-'}</td>
+                  <td className="text-right">{fmt(r.price)}</td>
+                  <td className="text-right">{r.quantity}</td>
+                  <td className="text-right font-medium">
+                    {showOrderCols
+                      ? (r.invoiceValue !== null ? fmt(r.invoiceValue) : <span className="text-gray-300">—</span>)
+                      : ''}
+                  </td>
+                  <td className="text-xs">
+                    {showOrderCols
+                      ? (r.refundStatus
+                          ? <span className="tag bg-red-100 text-red-700">{r.refundStatus}</span>
+                          : <span className="text-gray-300">—</span>)
+                      : ''}
+                  </td>
+                  <td className="text-right">{r.returnedQty || <span className="text-gray-300">—</span>}</td>
+                  <td>
+                    {showOrderCols
+                      ? <span className={`tag ${r.orderType === 'THHT' ? 'bg-red-100 text-red-700' : 'bg-orange-100 text-orange-700'}`}>
+                          {r.orderType}
+                        </span>
+                      : ''}
+                  </td>
+                  <td className="text-xs font-mono">
+                    {showOrderCols
+                      ? (r.invoiceNo || <span className="text-gray-300">—</span>)
+                      : ''}
+                  </td>
+                  <td>
+                    {showOrderCols
+                      ? (r.releaseStatus
+                          ? <span className={`tag ${
+                              norm(r.releaseStatus).includes('đã phát hành') || norm(r.releaseStatus).includes('đã cấp mã')
+                                ? 'bg-green-100 text-green-700'
+                                : norm(r.releaseStatus).includes('hủy')
+                                ? 'bg-red-100 text-red-700'
+                                : 'bg-yellow-100 text-yellow-700'
+                            }`}>{r.releaseStatus}</span>
+                          : <span className="text-gray-300">—</span>)
+                      : ''}
+                  </td>
+                  <td>
+                    {showOrderCols ? (
+                      <input type="text" className="input input-sm w-full text-xs"
+                        placeholder="Nhập số HĐ ĐC..."
+                        defaultValue={r.adjustmentInvoiceNo}
+                        onBlur={e => {
+                          const v = e.target.value.trim();
+                          if (v !== r.adjustmentInvoiceNo) updateAdjustmentInvoiceNo(r.orderId, v);
+                        }}
+                      />
+                    ) : ''}
+                  </td>
+                  <td className="text-center">
+                    {showOrderCols ? (
+                      <button
+                        onClick={() => toggleShopReceived(r.orderId, r.shopReceived)}
+                        className={`inline-flex items-center justify-center w-6 h-6 rounded border ${
+                          r.shopReceived
+                            ? 'bg-green-500 border-green-500 text-white'
+                            : 'bg-white border-gray-300 hover:border-gray-400'
+                        }`}
+                        title={r.shopReceived ? 'Đã nhận - click để bỏ' : 'Chưa nhận - click để đánh dấu'}
+                      >
+                        {r.shopReceived ? <Check size={14} /> : null}
+                      </button>
+                    ) : ''}
+                  </td>
+                  <td>
+                    {showOrderCols ? (
+                      <input type="text" className="input input-sm w-full text-xs"
+                        placeholder="Vd: Còn mới, Hỏng, Thiếu..."
+                        defaultValue={r.goodsCondition}
+                        onBlur={e => {
+                          const v = e.target.value.trim();
+                          if (v !== r.goodsCondition) updateCondition(r.orderId, v);
+                        }}
+                      />
+                    ) : ''}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
 
       <div className="mt-3 text-xs text-gray-500">
-        Hiển thị {filtered.length} đơn (lọc từ tổng {rows.length} đơn cần xử lý)
+        Hiển thị {filtered.length} dòng SP (từ tổng {rows.length} dòng cần xử lý)
       </div>
     </div>
   );
