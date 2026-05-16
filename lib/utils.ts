@@ -19,7 +19,15 @@ export const parseDate = (s: any): Date | null => {
     return isNaN(d.getTime()) ? null : d;
   }
   const str = String(s).trim();
-  // 2026-05-01 00:01 hoặc 2026-05-01T00:01:00
+  // QUAN TRỌNG: Nếu chuỗi đã là ISO 8601 có timezone (chứa 'Z', '+HH:MM', '-HH:MM' ở cuối)
+  // → để JS tự parse chuẩn UTC, KHÔNG dùng regex thủ công vì sẽ hiểu nhầm UTC thành local
+  // Ví dụ: "2026-05-16T07:08:40+00:00" = 07:08 UTC = 14:08 VN, nếu parse bằng new Date(2026,4,16,7,8,40)
+  // sẽ thành 07:08 VN (sai mất 7 tiếng).
+  if (/T\d{2}:\d{2}/.test(str) && /([Zz]|[+-]\d{2}:?\d{2})$/.test(str)) {
+    const d = new Date(str);
+    if (!isNaN(d.getTime())) return d;
+  }
+  // 2026-05-01 00:01 hoặc 2026-05-01T00:01:00 (không có timezone → coi là local time)
   let m = str.match(/^(\d{4})-(\d{2})-(\d{2})[\sT]?(\d{2})?:?(\d{2})?:?(\d{2})?/);
   if (m) {
     return new Date(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
@@ -36,7 +44,8 @@ export const parseDate = (s: any): Date | null => {
 export const fmtDate = (d: any): string => {
   const dt = d instanceof Date ? d : parseDate(d);
   if (!dt) return '';
-  return dt.toLocaleDateString('vi-VN') + ' ' + dt.toTimeString().slice(0, 5);
+  // toLocaleDateString + toLocaleTimeString tự động convert sang LOCAL timezone của browser
+  return dt.toLocaleDateString('vi-VN') + ' ' + dt.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', hour12: false });
 };
 
 export const dateKey = (d: any, grp: 'day' | 'month' | 'year'): string => {
