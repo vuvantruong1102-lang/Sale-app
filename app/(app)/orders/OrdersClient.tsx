@@ -56,6 +56,19 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
   const supabase = createClient();
   const [orders, setOrders] = useState<Order[]>(initialOrders);
   const [reconciliation, setReconciliation] = useState(initialRecon);
+  // DEBUG: log initialOrders count
+  if (typeof window !== 'undefined' && !(window as any).__ordersDebugged) {
+    (window as any).__ordersDebugged = true;
+    console.log('[OrdersClient] initialOrders.length =', initialOrders.length);
+    if (initialOrders.length > 0) {
+      console.log('[OrdersClient] first:', initialOrders[0].date_order, initialOrders[0].order_id);
+      console.log('[OrdersClient] last:', initialOrders[initialOrders.length - 1].date_order, initialOrders[initialOrders.length - 1].order_id);
+      // Phân bố platform
+      const platCount: Record<string, number> = {};
+      initialOrders.forEach((o: any) => { platCount[o.platform] = (platCount[o.platform] || 0) + 1; });
+      console.log('[OrdersClient] by platform:', platCount);
+    }
+  }
   const [dateRange, setDateRange] = useState('all');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
