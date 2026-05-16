@@ -136,8 +136,9 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       const misaRec = misaMap.get(oid);
       const statusRec = statusMap.get(oid);
 
-      // Giá trị xuất HĐ = cột I "Giá trị đã xuất hóa đơn" (không phải cột H "Giá trị đơn hàng")
-      const invoiceValue = misaRec?.invoice_export_value ?? null;
+      // Giá trị xuất HĐ = cột D "Giá trị hóa đơn" trong file Hoa_don (invoice_status)
+      // Fallback: file MISA (misa_orders.invoice_export_value)
+      const invoiceValue = statusRec?.invoice_value ?? misaRec?.invoice_export_value ?? null;
       // Trạng thái xuất HĐ = cột L "Tình trạng xuất hóa đơn" trong file MISA
       const exportStatusText = misaRec?.export_status ?? null;
       // TT phát hành HĐ = cột K "TT phát hành hóa đơn" trong file Hoa_don
@@ -500,12 +501,19 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
           const row = allRows[i] || [];
           const orderId = String(row[c_orderId] ?? '').trim();
           if (!orderId) continue;
+          // Parse số có dấu phẩy + space, vd "349,000 " → 349000
+          const parseNum = (v: any): number => {
+            if (v === null || v === undefined || v === '') return 0;
+            const cleaned = String(v).replace(/,/g, '').trim();
+            const n = Number(cleaned);
+            return isNaN(n) ? 0 : n;
+          };
           payload.push({
             user_id: user.id,
             order_id: orderId,
             invoice_no: c_no >= 0 ? String(row[c_no] ?? '').trim() : '',
             invoice_date: c_date >= 0 ? toIso(row[c_date]) : null,
-            invoice_value: c_value >= 0 ? +(row[c_value] || 0) : 0,
+            invoice_value: c_value >= 0 ? parseNum(row[c_value]) : 0,
             platform: c_platform >= 0 ? String(row[c_platform] ?? '').trim() : '',
             invoice_type: c_type >= 0 ? String(row[c_type] ?? '').trim() : '',
             invoice_status: c_status >= 0 ? String(row[c_status] ?? '').trim() : '',
