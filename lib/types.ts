@@ -26,6 +26,19 @@ export type Order = {
   date_complete?: string | null;
   invoice_issued?: boolean;
   invoice_no?: string;
+  // Phân hệ Đơn hủy/Trả hàng
+  refund_status?: string;     // Trạng thái Trả hàng/Hoàn tiền (cột O Shopee)
+  cancel_reason?: string;     // Lý do hủy (cột F Shopee)
+  returned_qty?: number;      // Số lượng sản phẩm được hoàn trả (cột AB Shopee)
+};
+
+export type Return = {
+  id?: number;
+  user_id?: string;
+  order_id: string;
+  shop_received?: boolean;
+  goods_condition?: string;
+  note?: string;
 };
 
 export type Product = {
