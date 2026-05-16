@@ -875,7 +875,7 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         const c_voucher = findCol(headers, 'Mã giảm giá của Shop', 'Shop Voucher');
         const c_feeFix = findCol(headers, 'Phí cố định', 'Commission Fee');
         const c_feeSvc = findCol(headers, 'Phí Dịch Vụ', 'Service Fee');
-        const c_feePay = findCol(headers, 'Phí thanh toán', 'Payment Fee');
+        const c_feePay = findCol(headers, 'Phí thanh toán', 'Phí xử lý giao dịch', 'Payment Fee', 'Transaction Fee');
         const c_dateOrder = findCol(headers, 'Ngày đặt hàng', 'Order Time');
         const c_dateShip = findCol(headers, 'Ngày gửi hàng', 'Ship Time');
         const c_dateComplete = findCol(headers, 'Thời gian hoàn thành đơn hàng', 'Completed Time');
