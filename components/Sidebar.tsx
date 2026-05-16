@@ -5,12 +5,13 @@ import { usePathname, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import {
   LayoutDashboard, Package, Boxes, Megaphone, Receipt,
-  TrendingUp, Settings, LogOut, ShoppingBag,
+  TrendingUp, Settings, LogOut, ShoppingBag, RotateCcw,
 } from 'lucide-react';
 
 const items = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/orders', label: 'Đơn hàng', icon: Package },
+  { href: '/returns', label: 'Đơn hủy/Trả hàng', icon: RotateCcw },
   { href: '/inventory', label: 'Hàng tồn kho', icon: Boxes },
   { href: '/ads', label: 'Quảng cáo', icon: Megaphone },
   { href: '/invoices', label: 'Hóa đơn', icon: Receipt },
