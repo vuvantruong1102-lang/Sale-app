@@ -34,25 +34,23 @@ type InvStatus = {
   invoice_status?: string;         // Cột H trong file (giữ để tham khảo)
   release_status?: string;         // TT phát hành HĐ (cột K)
   invoice_type?: string;
-  adjustment_invoice_no?: string;  // Số HĐ điều chỉnh (manual input)
 };
 
 const DEFAULT_COLS: ColDef[] = [
   { key: 'date',                width: 120, minWidth: 90 },
   { key: 'platform',            width: 80,  minWidth: 60 },
   { key: 'orderId',             width: 140, minWidth: 100 },
+  { key: 'dateShip',            width: 120, minWidth: 90 },
   { key: 'status',              width: 105, minWidth: 70 },
   { key: 'product',             width: 260, minWidth: 120 },
   { key: 'sku',                 width: 95,  minWidth: 60 },
   { key: 'quantity',            width: 70,  minWidth: 50 },
   { key: 'price',               width: 100, minWidth: 80 },
   { key: 'orderValue',          width: 110, minWidth: 80 },
-  { key: 'dateShip',            width: 120, minWidth: 90 },
   { key: 'invoiceValue',        width: 120, minWidth: 90 },
   { key: 'exportStatus',        width: 140, minWidth: 110 },
-  { key: 'invoiceNo',           width: 130, minWidth: 100 }, // MỚI: Số HĐ
   { key: 'releaseStatus',       width: 140, minWidth: 110 },
-  { key: 'adjustmentInvoiceNo', width: 140, minWidth: 110 }, // MỚI: Số HĐ điều chỉnh
+  { key: 'invoiceNo',           width: 130, minWidth: 100 },
   { key: 'warning',             width: 240, minWidth: 150 },
 ];
 
@@ -229,7 +227,6 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         hasShipped,
         isCancelled,
         invoiceNo: statusRec?.invoice_no || '',
-        adjustmentInvoiceNo: statusRec?.adjustment_invoice_no || '',
       });
     });
     return rows;
@@ -337,7 +334,6 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         if (!matchList('exportStatus', r.statusFinal.text)) return false;
         if (!matchText('invoiceNo', r.invoiceNo)) return false;
         if (!matchList('releaseStatus', r.releaseStatusText || '(trống)')) return false;
-        if (!matchText('adjustmentInvoiceNo', r.adjustmentInvoiceNo)) return false;
         return true;
       });
     }
@@ -525,26 +521,6 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
 
       const withRelease = payload.filter(p => p.release_status).length;
 
-      // Preserve adjustment_invoice_no đã có (manual input) — không ghi đè bằng null
-      const orderIds = payload.map(p => p.order_id);
-      const existingMap = new Map<string, string>();
-      const ID_BATCH = 100;
-      for (let i = 0; i < orderIds.length; i += ID_BATCH) {
-        const slice = orderIds.slice(i, i + ID_BATCH);
-        const { data: existing } = await supabase
-          .from('invoice_status')
-          .select('order_id, adjustment_invoice_no')
-          .in('order_id', slice);
-        (existing || []).forEach((r: any) => {
-          if (r.adjustment_invoice_no) existingMap.set(r.order_id, r.adjustment_invoice_no);
-        });
-      }
-      // Merge adjustment_invoice_no vào payload
-      payload.forEach((p: any) => {
-        const adj = existingMap.get(p.order_id);
-        if (adj) p.adjustment_invoice_no = adj;
-      });
-
       const BATCH = 500;
       for (let i = 0; i < payload.length; i += BATCH) {
         const slice = payload.slice(i, i + BATCH);
@@ -570,48 +546,23 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
     }
   };
 
-  // Cập nhật "Số HĐ điều chỉnh" (manual input) — lưu vào DB
-  const updateAdjustmentInvoiceNo = async (orderId: string, newVal: string) => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    const existing = invStatus.find(r => r.order_id === orderId);
-    if (existing) {
-      const { error } = await supabase
-        .from('invoice_status')
-        .update({ adjustment_invoice_no: newVal })
-        .eq('user_id', user.id)
-        .eq('order_id', orderId);
-      if (error) { window.alert('Lỗi: ' + error.message); return; }
-      setInvStatus(prev => prev.map(r => r.order_id === orderId ? { ...r, adjustment_invoice_no: newVal } : r));
-    } else {
-      // Chưa có record → tạo mới với chỉ field này
-      const { data, error } = await supabase
-        .from('invoice_status')
-        .insert({ user_id: user.id, order_id: orderId, adjustment_invoice_no: newVal })
-        .select().single();
-      if (error) { window.alert('Lỗi: ' + error.message); return; }
-      if (data) setInvStatus(prev => [...prev, data as InvStatus]);
-    }
-  };
-
   const handleExport = () => {
     if (!filtered.length) { window.alert('Không có dữ liệu'); return; }
     const rows = filtered.map(r => ({
       'Ngày đặt': r.o.date_order,
       'Sàn': r.o.platform,
       'Mã đơn': r.o.order_id,
+      'Ngày gửi hàng': r.dateShip || '',
       'Trạng thái': r.o.status,
       'Sản phẩm': r.o.product_name,
       'SKU': r.o.sku,
       'Số lượng': r.totalQty,
       'Giá bán': r.price,
       'Giá trị ĐH': r.orderValue,
-      'Ngày gửi hàng': r.dateShip || '',
       'Giá trị xuất HĐ': r.invoiceValue ?? '',
       'Trạng thái xuất HĐ': r.statusFinal.text,
-      'Số HĐ': r.invoiceNo || '',
       'TT phát hành HĐ': r.releaseStatusText || '',
-      'Số HĐ điều chỉnh': r.adjustmentInvoiceNo || '',
+      'Số HĐ': r.invoiceNo || '',
       'Cảnh báo': r.warnings.join('; '),
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
@@ -730,6 +681,9 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
             <ColHeader label="Mã đơn" colKey="orderId" width={colW('orderId')} onResize={w => setWidth('orderId', w)}
               filterable filterType="text"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Ngày gửi" colKey="dateShip" width={colW('dateShip')} onResize={w => setWidth('dateShip', w)}
+              filterable filterType="date"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
             <ColHeader label="Trạng thái" colKey="status" width={colW('status')} onResize={w => setWidth('status', w)}
               filterable filterType="list" filterValues={Array.from(uniqueValues.statuses)}
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
@@ -748,29 +702,23 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
             <ColHeader label="Giá trị ĐH" colKey="orderValue" width={colW('orderValue')} onResize={w => setWidth('orderValue', w)} align="right"
               filterable filterType="number"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
-            <ColHeader label="Ngày gửi" colKey="dateShip" width={colW('dateShip')} onResize={w => setWidth('dateShip', w)}
-              filterable filterType="date"
-              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
             <ColHeader label="Giá trị xuất HĐ" colKey="invoiceValue" width={colW('invoiceValue')} onResize={w => setWidth('invoiceValue', w)} align="right"
               filterable filterType="number"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
             <ColHeader label="Trạng thái xuất HĐ" colKey="exportStatus" width={colW('exportStatus')} onResize={w => setWidth('exportStatus', w)}
               filterable filterType="list" filterValues={Array.from(uniqueValues.exportStatuses)}
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
-            <ColHeader label="Số HĐ" colKey="invoiceNo" width={colW('invoiceNo')} onResize={w => setWidth('invoiceNo', w)}
-              filterable filterType="text"
-              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
             <ColHeader label="TT phát hành HĐ" colKey="releaseStatus" width={colW('releaseStatus')} onResize={w => setWidth('releaseStatus', w)}
               filterable filterType="list" filterValues={Array.from(uniqueValues.releaseStatuses)}
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
-            <ColHeader label="Số HĐ điều chỉnh" colKey="adjustmentInvoiceNo" width={colW('adjustmentInvoiceNo')} onResize={w => setWidth('adjustmentInvoiceNo', w)}
+            <ColHeader label="Số HĐ" colKey="invoiceNo" width={colW('invoiceNo')} onResize={w => setWidth('invoiceNo', w)}
               filterable filterType="text"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
             <th>Cảnh báo</th>
           </tr></thead>
           <tbody>
             {pageRows.length === 0 && (
-              <tr><td colSpan={16} className="text-center text-gray-400 py-12">
+              <tr><td colSpan={15} className="text-center text-gray-400 py-12">
                 Không có dữ liệu
               </td></tr>
             )}
@@ -781,6 +729,7 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
                   <td className="text-xs">{fmtDate(o.date_order)}</td>
                   <td><span className={`tag ${tagClass(o.platform)}`}>{o.platform === 'shopee' ? 'Shopee' : 'TikTok'}</span></td>
                   <td className="font-medium text-xs">{o.order_id}</td>
+                  <td className="text-xs">{r.dateShip ? fmtDate(r.dateShip) : <span className="text-gray-300">—</span>}</td>
                   <td><span className={`tag ${tagClass(r.statusColor)}`}>{r.statusText}</span></td>
                   <td>
                     <div className="truncate" title={o.product_name}>{o.product_name || '-'}</div>
@@ -789,7 +738,6 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
                   <td className="text-right">{r.totalQty}</td>
                   <td className="text-right">{fmt(r.price)}</td>
                   <td className="text-right font-medium">{fmt(r.orderValue)}</td>
-                  <td className="text-xs">{r.dateShip ? fmtDate(r.dateShip) : <span className="text-gray-300">—</span>}</td>
                   <td className="text-right">
                     {r.invoiceValue !== null
                       ? <span className={`font-medium ${Math.abs(r.invoiceValue - r.orderValue) > 0.5 ? 'text-red-600' : ''}`}>{fmt(r.invoiceValue)}</span>
@@ -797,9 +745,6 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
                   </td>
                   <td>
                     <span className={`tag ${tagClass(r.statusFinal.color)}`}>{r.statusFinal.text}</span>
-                  </td>
-                  <td className="text-xs font-mono">
-                    {r.invoiceNo || <span className="text-gray-300">—</span>}
                   </td>
                   <td>
                     {r.releaseStatusText
@@ -812,19 +757,8 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
                         }`}>{r.releaseStatusText}</span>
                       : <span className="text-gray-300">—</span>}
                   </td>
-                  <td>
-                    <input
-                      type="text"
-                      className="input input-sm w-full text-xs"
-                      placeholder="Nhập số HĐ ĐC..."
-                      defaultValue={r.adjustmentInvoiceNo}
-                      onBlur={e => {
-                        const newVal = e.target.value.trim();
-                        if (newVal !== r.adjustmentInvoiceNo) {
-                          updateAdjustmentInvoiceNo(r.o.order_id, newVal);
-                        }
-                      }}
-                    />
+                  <td className="text-xs font-mono">
+                    {r.invoiceNo || <span className="text-gray-300">—</span>}
                   </td>
                   <td>
                     {r.warnings.length === 0
