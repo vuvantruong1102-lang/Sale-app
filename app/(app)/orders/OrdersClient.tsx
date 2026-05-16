@@ -700,17 +700,25 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
           continue;
         }
 
+        let countRows = 0, countSkipped = 0;
         for (let i = headerRowIdx + 1; i < allRows.length; i++) {
           const row = allRows[i] || [];
           const orderId = String(row[c_orderId] ?? '').trim();
-          if (!orderId) continue;
+          if (!orderId) { countSkipped++; continue; }
 
-          const payout = +(row[c_payout] || 0);
-          const feeRaw = c_totalFee >= 0 ? +(row[c_totalFee] || 0) : 0;
+          // Parse payout: trong file mới có giá trị âm như "-14507060" hoặc null
+          const payoutCell = row[c_payout];
+          const payout = payoutCell === null || payoutCell === undefined || payoutCell === ''
+            ? 0
+            : Number(String(payoutCell).replace(/,/g, ''));
+          if (isNaN(payout)) { countSkipped++; continue; }
+
+          const feeCell = c_totalFee >= 0 ? row[c_totalFee] : 0;
+          const feeRaw = feeCell === null || feeCell === undefined || feeCell === ''
+            ? 0
+            : Number(String(feeCell).replace(/,/g, ''));
           // Tổng phí trong file là số ÂM (vd -118.361) → đổi sang dương để lưu
-          const fee = Math.abs(feeRaw);
-
-          if (isNaN(payout)) continue;
+          const fee = isNaN(feeRaw) ? 0 : Math.abs(feeRaw);
 
           let dateVal: Date | null = null;
           if (c_dateSet >= 0 && row[c_dateSet]) {
@@ -726,7 +734,10 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
             cur.lastDate = dateVal;
           }
           accMap.set(orderId, cur);
+          countRows++;
         }
+        console.log(`[Ví TikTok] File "${f.name}": header=row${headerRowIdx}, c_orderId=${c_orderId}, c_payout=${c_payout}, c_totalFee=${c_totalFee}`);
+        console.log(`[Ví TikTok] Đã xử lý ${countRows} dòng, skip ${countSkipped}, accMap.size=${accMap.size}`);
       }
 
       if (accMap.size === 0) {
