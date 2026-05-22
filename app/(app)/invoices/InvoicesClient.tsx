@@ -145,18 +145,22 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       const releaseStatusText = statusRec?.release_status ?? null;
 
       // ============ TÍNH "TRẠNG THÁI XUẤT HĐ" (cột visible) ============
-      // Ưu tiên dùng giá trị từ file MISA cột L nếu có, ngược lại dùng logic suy ra
+      // Cột này phản ánh TÌNH TRẠNG XUẤT HÓA ĐƠN (cột L file MISA), KHÔNG phải
+      // trạng thái giao hàng. Vì vậy ưu tiên cột L trước; chỉ khi đơn không có
+      // dữ liệu MISA mới suy ra theo trạng thái giao hàng.
       let statusFinal: { text: string; color: string };
-      if (isCancelled) {
-        statusFinal = { text: 'Đơn đã hủy', color: 'gray' };
-      } else if (!hasShipped) {
-        statusFinal = { text: 'Chưa gửi hàng', color: 'gray' };
-      } else if (exportStatusText) {
+      if (exportStatusText) {
+        // Có cột L "Tình trạng xuất hóa đơn" từ file MISA → hiển thị nguyên văn
         const s = norm(exportStatusText);
         const color = s.includes('đã xuất') ? 'green' : (s.includes('chưa xuất') ? 'red' : 'yellow');
         statusFinal = { text: exportStatusText, color };
       } else if (misaRec) {
+        // Có bản ghi MISA nhưng cột L trống → coi như đã xuất
         statusFinal = { text: 'Đã xuất', color: 'green' };
+      } else if (isCancelled) {
+        statusFinal = { text: 'Đơn đã hủy', color: 'gray' };
+      } else if (!hasShipped) {
+        statusFinal = { text: 'Chưa gửi hàng', color: 'gray' };
       } else {
         statusFinal = { text: 'Chưa xuất HĐ', color: 'red' };
       }
