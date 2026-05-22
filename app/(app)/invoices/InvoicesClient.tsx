@@ -182,8 +182,8 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         warnings.push(`Giá trị HĐ sai: HĐ ${fmt(invoiceValue)} ≠ ĐH ${fmt(orderValue)}`);
       }
 
-      // Đơn đã hủy nhưng đã xuất HĐ — bỏ qua nếu HĐ chưa phát hành (chưa có hiệu lực)
-      if (isCancelled && misaRec && daXuatHD && !hdChuaPhatHanh) {
+      // Đơn đã hủy nhưng đã xuất HĐ — luôn cảnh báo (cần hủy HĐ), bất kể đã phát hành hay chưa
+      if (isCancelled && misaRec && daXuatHD) {
         warnings.push('Đơn hủy nhưng đã xuất HĐ — cần hủy HĐ');
       }
 
