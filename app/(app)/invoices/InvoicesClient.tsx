@@ -144,6 +144,10 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       // TT phát hành HĐ = cột K "TT phát hành hóa đơn" trong file Hoa_don
       const releaseStatusText = statusRec?.release_status ?? null;
 
+      // Cờ tiện ích dùng cho các cảnh báo bên dưới
+      const daXuatHD = norm(exportStatusText).includes('đã xuất'); // cột L = "Đã xuất hóa đơn"
+      const hdChuaPhatHanh = norm(releaseStatusText).includes('chưa phát hành'); // cột K = "Chưa phát hành"
+
       // ============ TÍNH "TRẠNG THÁI XUẤT HĐ" (cột visible) ============
       // Cột này phản ánh TÌNH TRẠNG XUẤT HÓA ĐƠN (cột L file MISA), KHÔNG phải
       // trạng thái giao hàng. Vì vậy ưu tiên cột L trước; chỉ khi đơn không có
@@ -173,26 +177,23 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         warnings.push('Chưa xuất HĐ (đã gửi hàng)');
       }
 
-      // Sai giá trị xuất HĐ (so sánh với Giá trị ĐH)
-      if (misaRec && invoiceValue !== null && Math.abs(invoiceValue - orderValue) > 0.5) {
+      // Sai giá trị xuất HĐ (so sánh với Giá trị ĐH) — chỉ khi đã thực sự xuất HĐ
+      if (misaRec && daXuatHD && invoiceValue !== null && Math.abs(invoiceValue - orderValue) > 0.5) {
         warnings.push(`Giá trị HĐ sai: HĐ ${fmt(invoiceValue)} ≠ ĐH ${fmt(orderValue)}`);
       }
 
-      // Đơn đã hủy nhưng đã xuất HĐ
-      if (isCancelled && misaRec) {
-        const s = norm(exportStatusText);
-        if (s.includes('đã xuất')) {
-          warnings.push('Đơn hủy nhưng đã xuất HĐ — cần hủy HĐ');
-        }
+      // Đơn đã hủy nhưng đã xuất HĐ — bỏ qua nếu HĐ chưa phát hành (chưa có hiệu lực)
+      if (isCancelled && misaRec && daXuatHD && !hdChuaPhatHanh) {
+        warnings.push('Đơn hủy nhưng đã xuất HĐ — cần hủy HĐ');
       }
 
-      // Đơn chưa gửi hàng nhưng đã xuất HĐ
-      if (!hasShipped && !isCancelled && misaRec && norm(exportStatusText).includes('đã xuất')) {
+      // Đơn chưa gửi hàng nhưng đã xuất HĐ — bỏ qua nếu HĐ chưa phát hành (chưa có hiệu lực)
+      if (!hasShipped && !isCancelled && misaRec && daXuatHD && !hdChuaPhatHanh) {
         warnings.push('Chưa gửi hàng nhưng đã xuất HĐ');
       }
 
       // TT phát hành HĐ — cảnh báo nếu chưa phát hành
-      if (misaRec && norm(exportStatusText).includes('đã xuất')) {
+      if (misaRec && daXuatHD) {
         if (!statusRec) {
           warnings.push('Đã xuất HĐ nhưng thiếu dữ liệu trạng thái phát hành');
         } else {
