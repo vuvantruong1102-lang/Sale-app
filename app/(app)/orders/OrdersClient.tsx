@@ -48,7 +48,7 @@ type ColFilter =
 type Props = {
   initialOrders: Order[];
   products: { sku: string; cost: number }[];
-  reconciliation: { order_id: string; shopee_payout: number; has_adjustment?: boolean }[];
+  reconciliation: { order_id: string; shopee_payout: number; total_fee?: number; has_adjustment?: boolean }[];
 };
 
 export default function OrdersClient({ initialOrders, products, reconciliation: initialRecon }: Props) {
@@ -93,6 +93,13 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
     return m;
   }, [reconciliation]);
 
+  // Map order_id -> Tổng phí (lưu trong bảng reconciliation, độc lập với việc xóa/import lại orders)
+  const reconFeeMap = useMemo(() => {
+    const m = new Map<string, number>();
+    reconciliation.forEach(r => { if (r.total_fee != null) m.set(r.order_id, r.total_fee); });
+    return m;
+  }, [reconciliation]);
+
   // Tính giá trị derived của mỗi row 1 lần để dùng cho filter + display
   // shopeePayout & phí chỉ hiển thị ở 1 dòng chính của mỗi đơn để tránh nhân đôi
   const rowsWithCalc = useMemo(() => {
@@ -124,7 +131,6 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       const price = o.price_deal || 0;
       const quantity = o.quantity || 1;
       const orderValue = price * quantity - (o.shop_voucher || 0);
-      const totalFee = (o.fee_fix || 0) + (o.fee_service || 0) + (o.fee_payment || 0);
       const st = shortStatus(o.status || '');
 
       // Shopee TT chỉ hiển thị ở dòng chính
@@ -132,6 +138,16 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       const hasPayout = payoutMap.has(o.order_id);
       const payoutValue = payoutMap.get(o.order_id) || 0;
       const shopeePayout = isMainRow && hasPayout ? payoutValue : null;
+
+      // ============ TỔNG PHÍ ============
+      // Ưu tiên lấy phí từ bảng reconciliation (bền vững, không mất khi xóa/import lại orders).
+      // Phí chỉ gán vào DÒNG CHÍNH để không bị nhân đôi với đơn nhiều SKU.
+      // Fallback: cộng các cột phí cũ trong orders (fee_fix/fee_service/fee_payment).
+      const orderFee = (o.fee_fix || 0) + (o.fee_service || 0) + (o.fee_payment || 0);
+      const hasReconFee = reconFeeMap.has(o.order_id);
+      const totalFee = hasReconFee
+        ? (isMainRow ? (reconFeeMap.get(o.order_id) || 0) : 0)
+        : orderFee;
 
       const isCancelled = st.text === 'Đã hủy';
       const isCompleted = st.text === 'Hoàn thành' || st.text === 'Đã nhận';
@@ -746,11 +762,12 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         return;
       }
 
-      // 1. Upsert vào bảng reconciliation (cho cột Sàn TT)
+      // 1. Upsert vào bảng reconciliation (cho cột Sàn TT + Tổng phí)
       const reconPayload = Array.from(accMap.entries()).map(([orderId, a]) => ({
         user_id: user.id,
         order_id: orderId,
         shopee_payout: a.payout,
+        total_fee: a.totalFee,
         transaction_count: a.count,
         last_transaction_date: a.lastDate?.toISOString() || null,
       }));
