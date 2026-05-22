@@ -192,17 +192,16 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         warnings.push('Chưa gửi hàng nhưng đã xuất HĐ');
       }
 
-      // TT phát hành HĐ — cảnh báo nếu chưa phát hành
+      // TT phát hành HĐ — cảnh báo các bất thường (KHÔNG cảnh báo "chưa phát hành")
       if (misaRec && daXuatHD) {
         if (!statusRec) {
           warnings.push('Đã xuất HĐ nhưng thiếu dữ liệu trạng thái phát hành');
         } else {
           const rs = norm(releaseStatusText);
-          if (rs.includes('chưa phát hành')) {
-            warnings.push('HĐ chưa phát hành');
-          } else if (rs.includes('hủy')) {
+          if (rs.includes('hủy')) {
             warnings.push('HĐ đã hủy');
-          } else if (!rs.includes('đã phát hành') && !rs.includes('đã cấp mã') && rs !== '') {
+          } else if (!rs.includes('đã phát hành') && !rs.includes('đã cấp mã')
+                     && !rs.includes('chưa phát hành') && rs !== '') {
             warnings.push(`TT phát hành bất thường: ${releaseStatusText}`);
           }
         }
