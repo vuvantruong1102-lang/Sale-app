@@ -353,7 +353,8 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         const data = await f.arrayBuffer();
         const wb = XLSX.read(data, { type: 'array', cellDates: true });
         const sh = wb.Sheets[wb.SheetNames[0]];
-        const allRows: any[][] = XLSX.utils.sheet_to_json(sh, { header: 1, defval: null, raw: false });
+        // raw:true → ô ngày là Date object thật, tránh lỗi đảo ngày/tháng + mất giờ
+        const allRows: any[][] = XLSX.utils.sheet_to_json(sh, { header: 1, defval: null, raw: true });
         let headerRowIdx = -1;
         for (let i = 0; i < Math.min(30, allRows.length); i++) {
           const row = allRows[i] || [];
@@ -471,7 +472,7 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         const data = await f.arrayBuffer();
         const wb = XLSX.read(data, { type: 'array', cellDates: true });
         const sh = wb.Sheets[wb.SheetNames[0]];
-        const rows: any[][] = XLSX.utils.sheet_to_json(sh, { header: 1, defval: null, raw: false });
+        const rows: any[][] = XLSX.utils.sheet_to_json(sh, { header: 1, defval: null, raw: true });
         if (rows.length < 3) continue;
 
         // Row 0 = header, Row 1 = mô tả (skip), Row 2+ = data
@@ -669,7 +670,7 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
           if (norm(n).includes('chi tiết đơn hàng')) { sheetName = n; break; }
         }
         const sh = wb.Sheets[sheetName];
-        const allRows: any[][] = XLSX.utils.sheet_to_json(sh, { header: 1, defval: null, raw: false });
+        const allRows: any[][] = XLSX.utils.sheet_to_json(sh, { header: 1, defval: null, raw: true });
         if (allRows.length < 2) continue;
 
         // Row 0 = header (file này không có meta phía trên)
@@ -865,7 +866,9 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         const data = await f.arrayBuffer();
         const wb = XLSX.read(data, { type: 'array', cellDates: true });
         const sh = wb.Sheets[wb.SheetNames[0]];
-        const rows: any[] = XLSX.utils.sheet_to_json(sh, { defval: null, raw: false });
+        // raw:true → giữ nguyên Date object cho ô ngày & số cho ô số.
+        // (raw:false sẽ format ô ngày thành chuỗi kiểu Mỹ "M/D/YY" và mất giờ → parseDate đảo ngày/tháng + 00:00)
+        const rows: any[] = XLSX.utils.sheet_to_json(sh, { defval: null, raw: true });
         if (!rows.length) continue;
         const headers = Object.keys(rows[0]);
 
