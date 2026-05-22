@@ -46,8 +46,14 @@ export const parseDate = (s: any): Date | null => {
 export const fmtDate = (d: any): string => {
   const dt = d instanceof Date ? d : parseDate(d);
   if (!dt) return '';
-  // toLocaleDateString + toLocaleTimeString tự động convert sang LOCAL timezone của browser
-  return dt.toLocaleDateString('vi-VN') + ' ' + dt.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  // Tự format dd/mm/yyyy HH:MM theo giờ LOCAL — KHÔNG dùng toLocaleDateString('vi-VN')
+  // vì một số môi trường (Vercel server, browser locale khác) trả về kiểu Mỹ M/D/YYYY.
+  const day = String(dt.getDate()).padStart(2, '0');
+  const mon = String(dt.getMonth() + 1).padStart(2, '0');
+  const yr = dt.getFullYear();
+  const hh = String(dt.getHours()).padStart(2, '0');
+  const mi = String(dt.getMinutes()).padStart(2, '0');
+  return `${day}/${mon}/${yr} ${hh}:${mi}`;
 };
 
 export const dateKey = (d: any, grp: 'day' | 'month' | 'year'): string => {
