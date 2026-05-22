@@ -32,10 +32,12 @@ export const parseDate = (s: any): Date | null => {
   if (m) {
     return new Date(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
   }
-  // DD/MM/YYYY HH:MM
-  m = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\s*(\d{2})?:?(\d{2})?/);
+  // DD/MM/YYYY HH:MM:SS (giờ-phút-giây đều optional). Năm cho phép 2 hoặc 4 chữ số.
+  m = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})(?:[\sT]+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
   if (m) {
-    return new Date(+m[3], +m[2] - 1, +m[1], +(m[4] || 0), +(m[5] || 0));
+    let yr = +m[3];
+    if (yr < 100) yr += 2000; // "26" -> 2026
+    return new Date(yr, +m[2] - 1, +m[1], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
   }
   const d = new Date(str);
   return isNaN(d.getTime()) ? null : d;
