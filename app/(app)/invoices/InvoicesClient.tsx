@@ -58,9 +58,10 @@ type Props = {
   initialOrders: Order[];
   initialMisa: MisaOrder[];
   initialInvStatus: InvStatus[];
+  initialExternal?: { order_id: string | null }[];
 };
 
-export default function InvoicesClient({ initialOrders, initialMisa, initialInvStatus }: Props) {
+export default function InvoicesClient({ initialOrders, initialMisa, initialInvStatus, initialExternal = [] }: Props) {
   const router = useRouter();
   const supabase = createClient();
   const [orders] = useState<Order[]>(initialOrders);
@@ -100,6 +101,13 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
     return m;
   }, [invStatus]);
 
+  // Set order_id có "Hóa đơn ngoài" (khách yêu cầu xuất HĐ theo thông tin công ty)
+  const externalOrderIds = useMemo(() => {
+    const s = new Set<string>();
+    initialExternal.forEach(e => { if (e.order_id) s.add(String(e.order_id).trim()); });
+    return s;
+  }, [initialExternal]);
+
   // Tính trạng thái xuất HĐ + cảnh báo cho mỗi đơn
   const rowsWithCalc = useMemo(() => {
     // Group orders theo order_id, tính tổng giá trị đơn (vì 1 đơn có thể nhiều dòng SKU)
@@ -132,6 +140,7 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       const st = shortStatus(main.status || '');
       const hasShipped = !!main.date_ship;
       const isCancelled = st.text === 'Đã hủy';
+      const isPendingShip = st.text === 'Chờ giao'; // đơn chưa thực sự giao xong
 
       const misaRec = misaMap.get(oid);
       const statusRec = statusMap.get(oid);
@@ -172,8 +181,13 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       // ============ CẢNH BÁO ============
       const warnings: string[] = [];
 
-      // Đơn đã gửi hàng nhưng chưa xuất HĐ
-      if (hasShipped && !isCancelled && !misaRec) {
+      // Đơn có trong "Hóa đơn ngoài" → khách yêu cầu xuất HĐ theo thông tin công ty
+      if (externalOrderIds.has(String(oid).trim())) {
+        warnings.push('Xuất HĐ theo thông tin KH');
+      }
+
+      // Đơn đã gửi hàng nhưng chưa xuất HĐ — bỏ qua nếu đơn còn "Chờ giao" (chưa giao xong)
+      if (hasShipped && !isPendingShip && !isCancelled && !misaRec) {
         warnings.push('Chưa xuất HĐ (đã gửi hàng)');
       }
 
@@ -235,7 +249,7 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       });
     });
     return rows;
-  }, [orders, misaMap, statusMap]);
+  }, [orders, misaMap, statusMap, externalOrderIds]);
 
   // Stats
   const stats = useMemo(() => {
