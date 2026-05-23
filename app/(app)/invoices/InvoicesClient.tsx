@@ -213,6 +213,11 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         warnings.push('Chưa gửi hàng nhưng đã xuất HĐ');
       }
 
+      // Đơn "Chờ giao" + đã xuất HĐ + HĐ chưa phát hành
+      if (isPendingShip && !isCancelled && misaRec && daXuatHD && hdChuaPhatHanh) {
+        warnings.push('Đơn chưa giao, chưa phát hành HĐ');
+      }
+
       // TT phát hành HĐ — cảnh báo các bất thường (KHÔNG cảnh báo "chưa phát hành")
       if (misaRec && daXuatHD) {
         if (!statusRec) {
