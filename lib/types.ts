@@ -46,6 +46,7 @@ export type Product = {
   user_id?: string;
   sku: string;
   name: string;
+  invoice_name?: string;
   variation?: string;
   stock_initial?: number;
   cost?: number;
