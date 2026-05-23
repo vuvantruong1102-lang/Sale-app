@@ -902,11 +902,15 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
                     {!r.statusRec
                       ? <span className="text-gray-400">N/A</span>
                       : r.cqtStatusText
-                      ? <span className={`tag ${
-                          norm(r.cqtStatusText).includes('đã gửi') || norm(r.cqtStatusText).includes('hợp lệ') ? 'bg-green-100 text-green-700'
-                            : norm(r.cqtStatusText).includes('chưa gửi') ? 'bg-yellow-100 text-yellow-700'
-                            : 'bg-gray-100 text-gray-600'
-                        }`}>{r.cqtStatusText}</span>
+                      ? (() => {
+                          const cqt = String(r.cqtStatusText).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/gi, 'd').toLowerCase();
+                          const cls = (cqt.includes('da gui') || cqt.includes('hop le'))
+                            ? 'bg-green-100 text-green-700'
+                            : cqt.includes('chua gui')
+                            ? 'bg-yellow-100 text-yellow-700'
+                            : 'bg-gray-100 text-gray-600';
+                          return <span className={`tag ${cls}`}>{r.cqtStatusText}</span>;
+                        })()
                       : <span className="text-gray-300">—</span>}
                   </td>
                   <td>
