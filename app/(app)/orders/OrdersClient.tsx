@@ -139,15 +139,13 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       const payoutValue = payoutMap.get(o.order_id) || 0;
       const shopeePayout = isMainRow && hasPayout ? payoutValue : null;
 
-      // ============ TỔNG PHÍ ============
-      // Ưu tiên lấy phí từ bảng reconciliation (bền vững, không mất khi xóa/import lại orders).
-      // Phí chỉ gán vào DÒNG CHÍNH để không bị nhân đôi với đơn nhiều SKU.
-      // Fallback: cộng các cột phí cũ trong orders (fee_fix/fee_service/fee_payment).
+      // ============ PHÍ THEO SÀN (tách riêng) ============
+      // Phí gốc lưu trong reconciliation (bền vững) hoặc fee_fix (fallback), chỉ trên DÒNG CHÍNH.
       const orderFee = (o.fee_fix || 0) + (o.fee_service || 0) + (o.fee_payment || 0);
       const hasReconFee = reconFeeMap.has(o.order_id);
-      const totalFee = hasReconFee
+      const rawFee = hasReconFee
         ? (isMainRow ? (reconFeeMap.get(o.order_id) || 0) : 0)
-        : orderFee;
+        : (isMainRow ? orderFee : 0);
 
       const isCancelled = st.text === 'Đã hủy';
       const isCompleted = st.text === 'Hoàn thành' || st.text === 'Đã nhận';
@@ -156,24 +154,30 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       // Trạng thái "Hoàn thành"/"Đã hoàn tất" + Sàn TT âm
       const isReturned = isCompleted && hasPayout && payoutValue < 0;
 
-      // ============ DOANH THU ============
-      // Đơn THHT: doanh thu = Shopee TT (âm)
-      // Đơn hủy thông thường: doanh thu = Shopee TT (âm nếu có), 0 nếu chưa có đối soát
-      // Đơn bình thường: doanh thu = orderValue - totalFee - feeTTLK
-      let revenue: number;
-      let feeTTLK = 0;
+      // ============ PHÍ TIKTOK & PHÍ SHOPEE (2 cột riêng) ============
+      // Phí TikTok: CHỈ đơn TikTok (lấy từ Ví TikTok / reconciliation). Đơn Shopee = 0.
+      // Phí Shopee: CHỈ đơn Shopee = Giá trị ĐH − Sàn TT (cần có đối soát). Đơn TikTok = 0.
+      let feeTikTok = 0;
+      let feeShopee = 0;
+      if (!isCancelled) {
+        if (o.platform === 'tiktok') {
+          feeTikTok = rawFee;
+        } else if (o.platform === 'shopee' && isMainRow && hasPayout) {
+          feeShopee = orderValue - payoutValue;
+        }
+      }
+      // Giữ tên cũ để các phần khác (totals, filter, export) tương thích
+      const totalFee = feeTikTok;
+      const feeTTLK = feeShopee;
 
+      // ============ DOANH THU ============
+      let revenue: number;
       if (isReturned) {
         revenue = isMainRow ? payoutValue : 0;
       } else if (isCancelled) {
         revenue = isMainRow && hasPayout ? payoutValue : 0;
       } else {
-        // Phí Shopee = Giá trị đơn hàng − Sàn TT (trên DÒNG CHÍNH, đơn Shopee, có đối soát)
-        // Đơn TikTok: phí đã nằm trong Tổng phí nên Phí Shopee = 0
-        if (o.platform === 'shopee' && isMainRow && hasPayout) {
-          feeTTLK = orderValue - payoutValue;
-        }
-        revenue = orderValue - totalFee - feeTTLK;
+        revenue = orderValue - feeTikTok - feeShopee;
       }
 
       // ============ GIÁ VỐN ============
@@ -544,6 +548,9 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
           const r = rows[i] || [];
           const id = String(r[c_orderId] ?? '').trim();
           if (!id) continue;
+          // Bỏ qua dòng mô tả/placeholder của file mẫu (vd "Platform unique order ID.")
+          // Mã đơn thật không chứa dấu cách hay dấu chấm
+          if (/[\s.]/.test(id) || /order id|unique|sku id|product name/i.test(id)) continue;
           const skuVar = String((c_sku >= 0 && r[c_sku]) ?? '').trim() || 'NOSKU';
           const unique_key = id + '__' + skuVar;
 
@@ -935,6 +942,8 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         for (const r of rows) {
           const id = String(r[c_id!] ?? '').trim();
           if (!id) continue;
+          // Bỏ qua dòng mô tả/placeholder của file mẫu (vd "Platform unique order ID.")
+          if (/[\s.]/.test(id) || /order id|unique|sku id|product name/i.test(id)) continue;
           const skuVar = String((c_sku && r[c_sku]) ?? '').trim() || 'NOSKU';
           const unique_key = id + '__' + skuVar;
           allRows.push({
@@ -1087,7 +1096,7 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       'Số lượng': r.quantity,
       'Giá bán': r.price,
       'Giá trị ĐH': r.orderValue,
-      'Tổng phí': r.totalFee,
+      'Phí TikTok': r.totalFee,
       'Phí Shopee': r.feeTTLK,
       'Doanh thu': r.shopeePayout ?? '',
       'Sàn thanh toán': r.shopeePayout ?? '',
@@ -1225,7 +1234,7 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
             <ColHeader label="Giá trị ĐH" colKey="orderValue" width={colW('orderValue')} onResize={w => setWidth('orderValue', w)} align="right"
               filterable filterType="number"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
-            <ColHeader label="Tổng phí" colKey="fee" width={colW('fee')} onResize={w => setWidth('fee', w)} align="right"
+            <ColHeader label="Phí TikTok" colKey="fee" width={colW('fee')} onResize={w => setWidth('fee', w)} align="right"
               filterable filterType="number"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
             <ColHeader label="Phí Shopee" colKey="feeTTLK" width={colW('feeTTLK')} onResize={w => setWidth('feeTTLK', w)} align="right"
@@ -1301,7 +1310,11 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
                   <td className="text-right">{r.quantity}</td>
                   <td className="text-right">{fmt(r.price)}</td>
                   <td className="text-right font-medium">{fmt(r.orderValue)}</td>
-                  <td className="text-right text-yellow-600">{fmt(r.totalFee)}</td>
+                  <td className="text-right">
+                    {r.o.platform === 'tiktok' && r.isMainRow && r.totalFee !== 0
+                      ? <span className="text-yellow-600">{fmt(r.totalFee)}</span>
+                      : <span className="text-gray-300">—</span>}
+                  </td>
                   <td className="text-right">
                     {r.o.platform === 'shopee' && r.hasPayout && r.isMainRow
                       ? <span className="text-orange-600">{fmt(r.feeTTLK)}</span>
