@@ -375,7 +375,7 @@ export default function ExternalInvoicesClient({ initialInvoices, products = [],
   const labelCls = 'block text-xs font-medium text-gray-600 mb-1';
 
   return (
-    <div className="max-w-6xl">
+    <div className="w-full">
       <h1 className="text-2xl font-bold mb-1">Hóa đơn ngoài</h1>
       <p className="text-sm text-gray-500 mb-5">
         Nhập đơn cần xuất HĐ theo thông tin công ty (kê khai) — gồm đơn trên sàn (nhập mã đơn để link &amp; cảnh báo)
@@ -400,7 +400,7 @@ export default function ExternalInvoicesClient({ initialInvoices, products = [],
         </div>
 
         {/* Thông tin công ty */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
           <div>
             <label className={labelCls}>Tên công ty *</label>
             <input
