@@ -159,7 +159,14 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       // Phí Shopee: CHỈ đơn Shopee = Giá trị ĐH − Sàn TT (cần có đối soát). Đơn TikTok = 0.
       let feeTikTok = 0;
       let feeShopee = 0;
-      if (!isCancelled) {
+      if (isReturned) {
+        // Đơn THHT: phí = doanh thu (= Sàn TT, số âm thể hiện khoản hoàn)
+        if (o.platform === 'tiktok') {
+          feeTikTok = isMainRow ? payoutValue : 0;
+        } else if (o.platform === 'shopee') {
+          feeShopee = isMainRow ? payoutValue : 0;
+        }
+      } else if (!isCancelled) {
         if (o.platform === 'tiktok') {
           feeTikTok = rawFee;
         } else if (o.platform === 'shopee' && isMainRow && hasPayout) {
@@ -1312,12 +1319,12 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
                   <td className="text-right font-medium">{fmt(r.orderValue)}</td>
                   <td className="text-right">
                     {r.o.platform === 'tiktok' && r.isMainRow && r.totalFee !== 0
-                      ? <span className="text-yellow-600">{fmt(r.totalFee)}</span>
+                      ? <span className={r.totalFee < 0 ? 'text-red-600' : 'text-yellow-600'}>{fmt(r.totalFee)}</span>
                       : <span className="text-gray-300">—</span>}
                   </td>
                   <td className="text-right">
                     {r.o.platform === 'shopee' && r.hasPayout && r.isMainRow
-                      ? <span className="text-orange-600">{fmt(r.feeTTLK)}</span>
+                      ? <span className={r.feeTTLK < 0 ? 'text-red-600' : 'text-orange-600'}>{fmt(r.feeTTLK)}</span>
                       : <span className="text-gray-300">—</span>}
                   </td>
                   <td className="text-right">
