@@ -624,6 +624,29 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       const minDate = fileDates[0] || null;
       const maxDate = fileDates[fileDates.length - 1] || null;
 
+      // BẢO TOÀN dữ liệu nhập tay: số HĐ điều chỉnh (adjustment_invoice_no) được nhập ở
+      // trang Đơn hủy/Trả hàng và lưu CHUNG bảng invoice_status. Lưu lại trước khi xóa,
+      // rồi gộp vào payload để không bị mất khi import.
+      const { data: keepRows } = await supabase
+        .from('invoice_status')
+        .select('order_id, adjustment_invoice_no')
+        .eq('user_id', user.id)
+        .not('adjustment_invoice_no', 'is', null);
+      const adjMap = new Map<string, string>();
+      (keepRows || []).forEach((r: any) => {
+        if (r.adjustment_invoice_no) adjMap.set(String(r.order_id).trim(), r.adjustment_invoice_no);
+      });
+      // Gộp số HĐ điều chỉnh đã lưu vào payload (theo order_id)
+      payload.forEach(p => {
+        const adj = adjMap.get(String(p.order_id).trim());
+        if (adj) p.adjustment_invoice_no = adj;
+      });
+      // Đơn có số ĐC nhưng KHÔNG nằm trong file mới → vẫn cần khôi phục riêng sau upsert
+      const payloadIds = new Set(payload.map(p => String(p.order_id).trim()));
+      const orphanAdj = Array.from(adjMap.entries())
+        .filter(([oid]) => !payloadIds.has(oid))
+        .map(([order_id, adjustment_invoice_no]) => ({ user_id: user.id, order_id, adjustment_invoice_no }));
+
       if (minDate && maxDate) {
         const { error: delErr } = await supabase
           .from('invoice_status')
@@ -637,11 +660,11 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         const newIds = new Set(payload.map(p => p.order_id));
         const { data: nullRows } = await supabase
           .from('invoice_status')
-          .select('id, order_id')
+          .select('id, order_id, adjustment_invoice_no')
           .eq('user_id', user.id)
           .is('invoice_date', null);
         const orphanIds = (nullRows || [])
-          .filter(r => !newIds.has(r.order_id))
+          .filter(r => !newIds.has(r.order_id) && !r.adjustment_invoice_no) // GIỮ bản ghi có số ĐC
           .map(r => r.id);
         if (orphanIds.length > 0) {
           const { error: delNullErr } = await supabase
@@ -659,6 +682,14 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
           .from('invoice_status')
           .upsert(slice, { onConflict: 'user_id,order_id', ignoreDuplicates: false });
         if (error) throw error;
+      }
+
+      // Khôi phục số HĐ điều chỉnh cho các đơn KHÔNG có trong file mới (bị xóa ở trên)
+      if (orphanAdj.length > 0) {
+        const { error: restoreErr } = await supabase
+          .from('invoice_status')
+          .upsert(orphanAdj, { onConflict: 'user_id,order_id', ignoreDuplicates: false });
+        if (restoreErr) throw restoreErr;
       }
 
       setAlert({
