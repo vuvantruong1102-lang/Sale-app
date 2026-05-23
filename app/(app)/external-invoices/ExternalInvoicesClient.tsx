@@ -658,15 +658,15 @@ export default function ExternalInvoicesClient({ initialInvoices, products = [],
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-gray-600">
               <tr>
-                <th className="text-left px-3 py-2.5 font-medium">Mã đơn</th>
-                <th className="text-left px-3 py-2.5 font-medium">Công ty</th>
-                <th className="text-left px-3 py-2.5 font-medium">MST</th>
-                <th className="text-left px-3 py-2.5 font-medium">Email</th>
-                <th className="text-left px-3 py-2.5 font-medium">Mặt hàng</th>
-                <th className="text-right px-3 py-2.5 font-medium">Tổng tiền</th>
-                <th className="text-center px-3 py-2.5 font-medium w-24">Đã xuất HĐ</th>
-                <th className="text-left px-3 py-2.5 font-medium w-36">Số HĐ</th>
-                <th className="w-20"></th>
+                <th className="text-left px-3 py-2.5 font-medium w-32">Mã đơn</th>
+                <th className="text-left px-3 py-2.5 font-medium min-w-[220px]">Công ty</th>
+                <th className="text-left px-3 py-2.5 font-medium w-28">MST</th>
+                <th className="text-left px-3 py-2.5 font-medium w-44">Email</th>
+                <th className="text-left px-3 py-2.5 font-medium w-72">Mặt hàng</th>
+                <th className="text-right px-3 py-2.5 font-medium w-24">Tổng tiền</th>
+                <th className="text-center px-3 py-2.5 font-medium w-20">Đã xuất HĐ</th>
+                <th className="text-left px-3 py-2.5 font-medium w-32">Số HĐ</th>
+                <th className="w-16"></th>
               </tr>
             </thead>
             <tbody>
@@ -692,15 +692,15 @@ export default function ExternalInvoicesClient({ initialInvoices, products = [],
                       )}
                     </td>
                     <td className="px-3 py-2.5 align-top">
-                      <div className="font-medium">{inv.company_name}</div>
+                      <div className="font-medium whitespace-normal break-words">{inv.company_name}</div>
                       {inv.address && (
-                        <div className="text-xs text-gray-500 mt-0.5">{inv.address}</div>
+                        <div className="text-xs text-gray-500 mt-0.5 whitespace-normal break-words">{inv.address}</div>
                       )}
                     </td>
-                    <td className="px-3 py-2.5 align-top text-xs">{inv.tax_code || '—'}</td>
-                    <td className="px-3 py-2.5 align-top text-xs">{inv.email || '—'}</td>
+                    <td className="px-3 py-2.5 align-top text-xs whitespace-nowrap">{inv.tax_code || '—'}</td>
+                    <td className="px-3 py-2.5 align-top text-xs break-all">{inv.email || '—'}</td>
                     <td className="px-3 py-2.5 align-top">
-                      <div className="space-y-0.5">
+                      <div className="space-y-0.5 max-w-[280px]">
                         {inv.items?.map((it, i) => (
                           <div key={i} className="text-xs">
                             {it.code && <span className="font-mono text-gray-500">{it.code} </span>}
