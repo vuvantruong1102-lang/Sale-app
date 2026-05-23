@@ -103,11 +103,16 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
   // Tính giá trị derived của mỗi row 1 lần để dùng cho filter + display
   // shopeePayout & phí chỉ hiển thị ở 1 dòng chính của mỗi đơn để tránh nhân đôi
   const rowsWithCalc = useMemo(() => {
+    // Bỏ qua dòng mô tả/placeholder của file mẫu (vd "Platform unique order ID.")
+    const isPlaceholder = (id: string) =>
+      !id || /[\s.]/.test(id) || /order id|unique|sku id|product name/i.test(id);
+    const cleanOrders = orders.filter(o => !isPlaceholder(String(o.order_id || '').trim()));
+
     // Tìm dòng chính của mỗi đơn = dòng có Giá trị ĐH (price_deal × qty) cao nhất
     // → SKU có doanh thu cao hơn sẽ gánh phí
     const mainRowKey = new Map<string, string>(); // order_id -> unique_key dòng chính
     const grouped = new Map<string, Order[]>();
-    orders.forEach(o => {
+    cleanOrders.forEach(o => {
       const arr = grouped.get(o.order_id) || [];
       arr.push(o);
       grouped.set(o.order_id, arr);
@@ -127,7 +132,7 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       mainRowKey.set(oid, main.unique_key);
     });
 
-    return orders.map(o => {
+    return cleanOrders.map(o => {
       const price = o.price_deal || 0;
       const quantity = o.quantity || 1;
       const orderValue = price * quantity - (o.shop_voucher || 0);
