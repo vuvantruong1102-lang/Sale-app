@@ -168,13 +168,12 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       } else if (isCancelled) {
         revenue = isMainRow && hasPayout ? payoutValue : 0;
       } else {
-        // Phí TTLK = chênh lệch khi Shopee TT < (orderValue - totalFee) trên DÒNG CHÍNH
-        // CHỈ áp dụng cho đơn Shopee; đơn TikTok luôn = 0 (phí TT đã có trong Tổng phí)
-        const baseRevenue = orderValue - totalFee; // doanh thu chưa trừ TTLK
-        if (o.platform === 'shopee' && isMainRow && hasPayout && payoutValue >= 0 && payoutValue < baseRevenue) {
-          feeTTLK = baseRevenue - payoutValue;
+        // Phí Shopee = Giá trị đơn hàng − Sàn TT (trên DÒNG CHÍNH, đơn Shopee, có đối soát)
+        // Đơn TikTok: phí đã nằm trong Tổng phí nên Phí Shopee = 0
+        if (o.platform === 'shopee' && isMainRow && hasPayout) {
+          feeTTLK = orderValue - payoutValue;
         }
-        revenue = baseRevenue - feeTTLK;
+        revenue = orderValue - totalFee - feeTTLK;
       }
 
       // ============ GIÁ VỐN ============
@@ -202,10 +201,16 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
 
       const diff = shopeePayout !== null ? shopeePayout - revenue : null;
 
+      // ============ % PHÍ ============
+      // = Tổng phí thực tế của đơn ÷ Giá trị đơn hàng (áp dụng cả Shopee & TikTok)
+      // TikTok: phí nằm ở totalFee; Shopee: phí nằm ở feeTTLK
+      const effectiveFee = (totalFee || 0) + (feeTTLK || 0);
+      const feePercent = (isMainRow && orderValue > 0) ? (effectiveFee / orderValue) * 100 : null;
+
       return {
         o, price, quantity, orderValue, totalFee, feeTTLK, revenue, cogs, profit,
         statusText: st.text, statusColor: st.color,
-        shopeePayout, diff, isMainRow, hasPayout, isCancelled, isReturned,
+        shopeePayout, diff, feePercent, isMainRow, hasPayout, isCancelled, isReturned,
       };
     });
   }, [orders, costMap, payoutMap]);
@@ -272,9 +277,9 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       if (!matchNum('orderValue', r.orderValue)) return false;
       if (!matchNum('fee', r.totalFee)) return false;
       if (!matchNum('feeTTLK', r.feeTTLK)) return false;
-      if (!matchNum('revenue', r.revenue)) return false;
+      if (!matchNum('revenue', r.shopeePayout ?? 0)) return false;
       if (!matchNum('shopeePayout', r.shopeePayout ?? 0)) return false;
-      if (!matchNum('diff', r.diff ?? 0)) return false;
+      if (!matchNum('diff', r.feePercent ?? 0)) return false;
       if (!matchNum('cogs', r.cogs)) return false;
       if (!matchNum('profit', r.profit ?? 0)) return false;
 
@@ -1083,10 +1088,10 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       'Giá bán': r.price,
       'Giá trị ĐH': r.orderValue,
       'Tổng phí': r.totalFee,
-      'Phí TTLK': r.feeTTLK,
-      'Doanh thu': r.revenue,
+      'Phí Shopee': r.feeTTLK,
+      'Doanh thu': r.shopeePayout ?? '',
       'Sàn thanh toán': r.shopeePayout ?? '',
-      'Chênh lệch': r.diff ?? '',
+      '% phí': r.feePercent !== null ? +r.feePercent.toFixed(1) : '',
       'Giá vốn HB': r.cogs,
       'Lợi nhuận': r.profit ?? '',
       'TT THHT': r.isReturned ? 'THHT' : '',
@@ -1223,7 +1228,7 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
             <ColHeader label="Tổng phí" colKey="fee" width={colW('fee')} onResize={w => setWidth('fee', w)} align="right"
               filterable filterType="number"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
-            <ColHeader label="Phí TTLK" colKey="feeTTLK" width={colW('feeTTLK')} onResize={w => setWidth('feeTTLK', w)} align="right"
+            <ColHeader label="Phí Shopee" colKey="feeTTLK" width={colW('feeTTLK')} onResize={w => setWidth('feeTTLK', w)} align="right"
               filterable filterType="number"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
             <ColHeader label="Doanh thu" colKey="revenue" width={colW('revenue')} onResize={w => setWidth('revenue', w)} align="right"
@@ -1232,7 +1237,7 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
             <ColHeader label="Sàn TT" colKey="shopeePayout" width={colW('shopeePayout')} onResize={w => setWidth('shopeePayout', w)} align="right"
               filterable filterType="number"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
-            <ColHeader label="Chênh lệch" colKey="diff" width={colW('diff')} onResize={w => setWidth('diff', w)} align="right"
+            <ColHeader label="% phí" colKey="diff" width={colW('diff')} onResize={w => setWidth('diff', w)} align="right"
               filterable filterType="number"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
             <ColHeader label="Giá vốn HB" colKey="cogs" width={colW('cogs')} onResize={w => setWidth('cogs', w)} align="right"
@@ -1259,12 +1264,16 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
               <td className="text-right font-semibold">{fmt(totals.totalOrderValue)}</td>
               <td className="text-right font-semibold text-yellow-600">{fmt(totals.totalFee)}</td>
               <td className="text-right font-semibold text-orange-600">{fmt(totals.totalFeeTTLK)}</td>
-              <td className={`text-right font-semibold ${totals.totalRevenue < 0 ? 'text-red-600' : ''}`}>{fmt(totals.totalRevenue)}</td>
+              <td className={`text-right font-semibold ${totals.totalShopeePayout < 0 ? 'text-red-600' : ''}`}>
+                {totals.countShopeePayout > 0 ? fmt(totals.totalShopeePayout) : <span className="text-gray-300">—</span>}
+              </td>
               <td className={`text-right font-semibold ${totals.totalShopeePayout < 0 ? 'text-red-600' : 'text-blue-600'}`}>
                 {totals.countShopeePayout > 0 ? fmt(totals.totalShopeePayout) : <span className="text-gray-300">—</span>}
               </td>
-              <td className={`text-right font-semibold ${totals.totalDiff < 0 ? 'text-red-600' : totals.totalDiff > 0 ? 'text-green-600' : ''}`}>
-                {totals.countShopeePayout > 0 ? `${totals.totalDiff > 0 ? '+' : ''}${fmt(totals.totalDiff)}` : <span className="text-gray-300">—</span>}
+              <td className="text-right font-semibold text-gray-600">
+                {totals.totalOrderValue > 0
+                  ? `${(((totals.totalFee + totals.totalFeeTTLK) / totals.totalOrderValue) * 100).toFixed(1)}%`
+                  : <span className="text-gray-300">—</span>}
               </td>
               <td className="text-right font-semibold">{fmt(totals.totalCogs)}</td>
               <td className={`text-right font-semibold ${totals.totalProfit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
@@ -1294,28 +1303,28 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
                   <td className="text-right font-medium">{fmt(r.orderValue)}</td>
                   <td className="text-right text-yellow-600">{fmt(r.totalFee)}</td>
                   <td className="text-right">
-                    {r.feeTTLK > 0
+                    {r.o.platform === 'shopee' && r.hasPayout && r.isMainRow
                       ? <span className="text-orange-600">{fmt(r.feeTTLK)}</span>
                       : <span className="text-gray-300">—</span>}
                   </td>
-                  <td className={`text-right font-medium ${
-                    r.revenue < 0 ? 'text-red-600' :
-                    (r.isCancelled || r.isReturned) ? 'text-gray-400' :
-                    ''
-                  }`}>{fmt(r.revenue)}</td>
+                  <td className="text-right">
+                    {r.shopeePayout !== null
+                      ? <span className={`font-medium ${r.shopeePayout < 0 ? 'text-red-600' : ''}`}>{fmt(r.shopeePayout)}</span>
+                      : <span className="text-gray-300">—</span>}
+                  </td>
                   <td className="text-right">
                     {r.shopeePayout !== null
                       ? <span className={`font-medium ${r.shopeePayout < 0 ? 'text-red-600' : 'text-blue-600'}`}>{fmt(r.shopeePayout)}</span>
                       : <span className="text-gray-300">—</span>}
                   </td>
                   <td className="text-right">
-                    {r.diff !== null ? (
+                    {r.feePercent !== null ? (
                       <span className={`font-medium ${
-                        Math.abs(r.diff) < 1 ? 'text-gray-500'
-                          : r.diff > 0 ? 'text-green-600'
-                          : 'text-red-600'
+                        r.feePercent > 30 ? 'text-red-600'
+                          : r.feePercent > 15 ? 'text-orange-600'
+                          : 'text-gray-600'
                       }`}>
-                        {r.diff > 0 ? '+' : ''}{fmt(r.diff)}
+                        {r.feePercent.toFixed(1)}%
                       </span>
                     ) : <span className="text-gray-300">—</span>}
                   </td>
