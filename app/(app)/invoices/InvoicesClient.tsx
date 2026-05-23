@@ -182,14 +182,24 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       // ============ CẢNH BÁO ============
       const warnings: string[] = [];
 
+      // Cả 2 cột "Trạng thái xuất HĐ" và "TT phát hành HĐ" là N/A (không có dữ liệu MISA lẫn HĐ)
+      const isNA = !misaRec && !statusRec;
+
       // Đơn có trong "Hóa đơn ngoài" → khách yêu cầu xuất HĐ theo thông tin công ty
       if (externalOrderIds.has(String(oid).trim())) {
         warnings.push('Xuất HĐ theo thông tin KH');
       }
 
-      // Đơn đã gửi hàng nhưng chưa xuất HĐ — bỏ qua nếu đơn còn "Chờ giao" (chưa giao xong)
-      if (hasShipped && !isPendingShip && !isCancelled && !misaRec) {
-        warnings.push('Chưa xuất HĐ (đã gửi hàng)');
+      if (isNA) {
+        // Cả 2 cột N/A: đơn hủy thì không cảnh báo; đơn khác nhắc kiểm tra MISA
+        if (!isCancelled) {
+          warnings.push('Kiểm tra cập nhật MISA');
+        }
+      } else {
+        // Đơn đã gửi hàng nhưng chưa xuất HĐ — bỏ qua nếu đơn còn "Chờ giao" (chưa giao xong)
+        if (hasShipped && !isPendingShip && !isCancelled && !misaRec) {
+          warnings.push('Chưa xuất HĐ (đã gửi hàng)');
+        }
       }
 
       // Sai giá trị xuất HĐ (so sánh với Giá trị ĐH) — chỉ khi đã thực sự xuất HĐ
@@ -453,6 +463,25 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       const withExport = payload.filter(p => p.invoice_export_value > 0).length;
       const withStatus = payload.filter(p => p.export_status).length;
 
+      // ===== Thay thế theo khoảng thời gian của file mới =====
+      // Cộng dồn nhiều kỳ: chỉ làm mới các đơn NẰM TRONG khoảng ngày của file vừa up.
+      // Đơn cũ trong khoảng nhưng KHÔNG còn trong file mới sẽ bị xóa → hiển thị N/A.
+      // Đơn thuộc kỳ khác (ngoài khoảng) được giữ nguyên.
+      const fileDates = payload.map(p => p.misa_date).filter(Boolean).sort();
+      const minDate = fileDates[0] || null;
+      const maxDate = fileDates[fileDates.length - 1] || null;
+
+      if (minDate && maxDate) {
+        // Xóa các đơn cũ trong khoảng [minDate, maxDate] (sẽ được nạp lại từ file mới)
+        const { error: delErr } = await supabase
+          .from('misa_orders')
+          .delete()
+          .eq('user_id', user.id)
+          .gte('misa_date', minDate)
+          .lte('misa_date', maxDate);
+        if (delErr) throw delErr;
+      }
+
       const BATCH = 500;
       for (let i = 0; i < payload.length; i += BATCH) {
         const slice = payload.slice(i, i + BATCH);
@@ -558,6 +587,23 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       }
 
       const withRelease = payload.filter(p => p.release_status).length;
+
+      // ===== Thay thế theo khoảng thời gian của file mới (giống import MISA) =====
+      // Đơn cũ trong khoảng [minDate, maxDate] mà không còn trong file mới sẽ bị xóa → N/A.
+      // Đơn thuộc kỳ khác (ngoài khoảng) được giữ nguyên.
+      const fileDates = payload.map(p => p.invoice_date).filter(Boolean).sort();
+      const minDate = fileDates[0] || null;
+      const maxDate = fileDates[fileDates.length - 1] || null;
+
+      if (minDate && maxDate) {
+        const { error: delErr } = await supabase
+          .from('invoice_status')
+          .delete()
+          .eq('user_id', user.id)
+          .gte('invoice_date', minDate)
+          .lte('invoice_date', maxDate);
+        if (delErr) throw delErr;
+      }
 
       const BATCH = 500;
       for (let i = 0; i < payload.length; i += BATCH) {
@@ -782,10 +828,14 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
                       : <span className="text-gray-300">—</span>}
                   </td>
                   <td>
-                    <span className={`tag ${tagClass(r.statusFinal.color)}`}>{r.statusFinal.text}</span>
+                    {r.misaRec
+                      ? <span className={`tag ${tagClass(r.statusFinal.color)}`}>{r.statusFinal.text}</span>
+                      : <span className="text-gray-400">N/A</span>}
                   </td>
                   <td>
-                    {r.releaseStatusText
+                    {!r.statusRec
+                      ? <span className="text-gray-400">N/A</span>
+                      : r.releaseStatusText
                       ? <span className={`tag ${
                           norm(r.releaseStatusText).includes('đã phát hành') || norm(r.releaseStatusText).includes('đã cấp mã')
                             ? 'bg-green-100 text-green-700'
