@@ -114,6 +114,9 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
     // Chỉ giữ dòng chính (total_paid cao nhất) để hiển thị, nhưng tổng giá trị tính tất cả
     const grouped = new Map<string, Order[]>();
     orders.forEach(o => {
+      const oid = String(o.order_id || '').trim();
+      // Bỏ qua dòng mô tả/placeholder của file mẫu (vd "Platform unique order ID.")
+      if (!oid || /[\s.]/.test(oid) || /order id|unique|sku id|product name/i.test(oid)) return;
       const arr = grouped.get(o.order_id) || [];
       arr.push(o);
       grouped.set(o.order_id, arr);
@@ -191,8 +194,8 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       }
 
       if (isNA) {
-        // Cả 2 cột N/A: đơn hủy thì không cảnh báo; đơn khác nhắc kiểm tra MISA
-        if (!isCancelled) {
+        // Cả 2 cột N/A: bỏ qua đơn hủy và đơn còn "Chờ giao"; đơn khác nhắc kiểm tra MISA
+        if (!isCancelled && !isPendingShip) {
           warnings.push('Kiểm tra cập nhật MISA');
         }
       } else {
