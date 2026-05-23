@@ -179,8 +179,9 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         }
       }
       // Giữ tên cũ để các phần khác (totals, filter, export) tương thích
-      const totalFee = feeTikTok;
-      const feeTTLK = feeShopee;
+      // Phí LUÔN hiển thị dương (giá trị tuyệt đối), kể cả đơn THHT
+      const totalFee = Math.abs(feeTikTok);
+      const feeTTLK = Math.abs(feeShopee);
 
       // ============ DOANH THU ============
       let revenue: number;
