@@ -156,6 +156,7 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       // Cờ tiện ích dùng cho các cảnh báo bên dưới
       const daXuatHD = norm(exportStatusText).includes('đã xuất'); // cột L = "Đã xuất hóa đơn"
       const hdChuaPhatHanh = norm(releaseStatusText).includes('chưa phát hành'); // cột K = "Chưa phát hành"
+      const hdDaCapMa = norm(releaseStatusText).includes('đã cấp mã') || norm(releaseStatusText).includes('đã phát hành'); // cột K
 
       // ============ TÍNH "TRẠNG THÁI XUẤT HĐ" (cột visible) ============
       // Cột này phản ánh TÌNH TRẠNG XUẤT HÓA ĐƠN (cột L file MISA), KHÔNG phải
@@ -196,9 +197,15 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         warnings.push(`Giá trị HĐ sai: HĐ ${fmt(invoiceValue)} ≠ ĐH ${fmt(orderValue)}`);
       }
 
-      // Đơn đã hủy nhưng đã xuất HĐ — luôn cảnh báo (cần hủy HĐ), bất kể đã phát hành hay chưa
+      // Đơn đã hủy nhưng đã xuất HĐ — nội dung cảnh báo theo TT phát hành HĐ
       if (isCancelled && misaRec && daXuatHD) {
-        warnings.push('Đơn hủy nhưng đã xuất HĐ — cần hủy HĐ');
+        if (hdChuaPhatHanh) {
+          warnings.push('Đơn hủy, không phát hành hóa đơn');
+        } else if (hdDaCapMa) {
+          warnings.push('Đơn hủy, cần hủy hóa đơn');
+        } else {
+          warnings.push('Đơn hủy nhưng đã xuất HĐ — cần hủy HĐ');
+        }
       }
 
       // Đơn chưa gửi hàng nhưng đã xuất HĐ — bỏ qua nếu HĐ chưa phát hành (chưa có hiệu lực)
