@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import {
   LayoutDashboard, Package, Boxes, Megaphone, Receipt,
-  TrendingUp, Settings, LogOut, ShoppingBag, RotateCcw,
+  TrendingUp, Settings, LogOut, ShoppingBag, RotateCcw, FileText,
 } from 'lucide-react';
 
 const items = [
@@ -15,6 +15,7 @@ const items = [
   { href: '/inventory', label: 'Hàng tồn kho', icon: Boxes },
   { href: '/ads', label: 'Quảng cáo', icon: Megaphone },
   { href: '/invoices', label: 'Hóa đơn', icon: Receipt },
+  { href: '/external-invoices', label: 'Hóa đơn ngoài', icon: FileText },
   { href: '/profit', label: 'Lỗ lãi', icon: TrendingUp },
   { href: '/settings', label: 'Cài đặt', icon: Settings },
 ];
