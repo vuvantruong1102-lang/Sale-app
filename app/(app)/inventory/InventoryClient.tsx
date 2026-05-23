@@ -120,7 +120,7 @@ export default function InventoryClient({ initialProducts, orders }: Props) {
       <div className="card !p-0 overflow-x-auto">
         <table className="tbl">
           <thead><tr>
-            <th>SKU</th><th>Tên sản phẩm</th>
+            <th>SKU</th><th>Tên sản phẩm</th><th>Tên hóa đơn</th>
             <th className="text-right">Tồn đầu kỳ</th>
             <th className="text-right">Đã bán</th>
             <th className="text-right">Tồn hiện tại</th>
@@ -132,7 +132,7 @@ export default function InventoryClient({ initialProducts, orders }: Props) {
           </tr></thead>
           <tbody>
             {filtered.length === 0 && (
-              <tr><td colSpan={10} className="text-center text-gray-400 py-12">
+              <tr><td colSpan={11} className="text-center text-gray-400 py-12">
                 Chưa có SKU — import đơn hàng trước, hoặc bấm "Thêm sản phẩm"
               </td></tr>
             )}
@@ -144,6 +144,7 @@ export default function InventoryClient({ initialProducts, orders }: Props) {
                 <tr key={p.sku}>
                   <td className="font-medium">{p.sku}</td>
                   <td><div className="max-w-[280px] truncate" title={p.name}>{p.name}</div></td>
+                  <td><div className="max-w-[220px] truncate text-gray-600" title={p.invoice_name || ''}>{p.invoice_name || <span className="text-gray-300">—</span>}</div></td>
                   <td className="text-right">{fmtN(p.stock_initial)}</td>
                   <td className="text-right">{fmtN(sold)}</td>
                   <td className={`text-right font-medium ${low ? 'text-yellow-600' : ''}`}>{fmtN(cur)}</td>
@@ -180,6 +181,12 @@ export default function InventoryClient({ initialProducts, orders }: Props) {
                 <label className="label">Tên sản phẩm *</label>
                 <input className="input w-full" value={form.name}
                   onChange={e => setForm({ ...form, name: e.target.value })} />
+              </div>
+              <div>
+                <label className="label">Tên hóa đơn</label>
+                <input className="input w-full" value={form.invoice_name || ''}
+                  placeholder="Tên dùng khi xuất hóa đơn (nếu khác tên sản phẩm)"
+                  onChange={e => setForm({ ...form, invoice_name: e.target.value })} />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
