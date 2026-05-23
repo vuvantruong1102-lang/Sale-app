@@ -7,10 +7,17 @@ export const revalidate = 0;
 
 export default async function ExternalInvoicesPage() {
   const supabase = createClient();
-  const { data } = await supabase
-    .from('external_invoices')
-    .select('*')
-    .order('created_at', { ascending: false });
+  const [inv, prods, ords] = await Promise.all([
+    supabase.from('external_invoices').select('*').order('created_at', { ascending: false }),
+    supabase.from('products').select('sku,name,invoice_name,price').order('sku'),
+    supabase.from('orders').select('order_id,sku,product_name,quantity,price_deal').limit(20000),
+  ]);
 
-  return <ExternalInvoicesClient initialInvoices={data || []} />;
+  return (
+    <ExternalInvoicesClient
+      initialInvoices={inv.data || []}
+      products={prods.data || []}
+      orders={ords.data || []}
+    />
+  );
 }

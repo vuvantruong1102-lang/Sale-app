@@ -9,7 +9,17 @@ import {
 } from 'lucide-react';
 
 // ---- Kiểu dữ liệu ----
-type Item = { code: string; name: string; qty: number; amount: number };
+type Item = { code: string; name: string; qty: number; price: number; amount: number };
+
+type ProductOpt = { sku: string; name: string; invoice_name?: string | null; price?: number | null };
+
+type OrderRow = {
+  order_id: string;
+  sku: string | null;
+  product_name: string | null;
+  quantity: number | null;
+  price_deal: number | null;
+};
 
 export type ExternalInvoice = {
   id?: number;
@@ -27,9 +37,11 @@ export type ExternalInvoice = {
 
 type Props = {
   initialInvoices: ExternalInvoice[];
+  products?: ProductOpt[];
+  orders?: OrderRow[];
 };
 
-const emptyItem = (): Item => ({ code: '', name: '', qty: 1, amount: 0 });
+const emptyItem = (): Item => ({ code: '', name: '', qty: 1, price: 0, amount: 0 });
 
 const emptyForm = (): ExternalInvoice => ({
   order_id: '',
@@ -42,7 +54,7 @@ const emptyForm = (): ExternalInvoice => ({
   note: '',
 });
 
-export default function ExternalInvoicesClient({ initialInvoices }: Props) {
+export default function ExternalInvoicesClient({ initialInvoices, products = [], orders = [] }: Props) {
   const router = useRouter();
   const supabase = createClient();
 
@@ -52,6 +64,7 @@ export default function ExternalInvoicesClient({ initialInvoices }: Props) {
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [search, setSearch] = useState('');
+  const [activeCodeRow, setActiveCodeRow] = useState<number | null>(null); // dòng đang gõ mã hàng
 
   // ---- Tổng thành tiền tự tính từ items ----
   const formTotal = useMemo(
@@ -63,14 +76,90 @@ export default function ExternalInvoicesClient({ initialInvoices }: Props) {
   const setField = (k: keyof ExternalInvoice, v: any) =>
     setForm(prev => ({ ...prev, [k]: v }));
 
-  // ---- Cập nhật 1 mặt hàng ----
+  // ---- Gom các dòng đơn hàng theo order_id (1 đơn có thể nhiều SKU) ----
+  const ordersByOid = useMemo(() => {
+    const m = new Map<string, OrderRow[]>();
+    orders.forEach(o => {
+      const oid = String(o.order_id || '').trim();
+      if (!oid) return;
+      const arr = m.get(oid) || [];
+      arr.push(o);
+      m.set(oid, arr);
+    });
+    return m;
+  }, [orders]);
+
+  // ---- Tự fill mặt hàng từ mã đơn (ghi đè toàn bộ) khi mã khớp đơn trên sàn ----
+  const fillFromOrder = (oid: string) => {
+    const key = oid.trim();
+    if (!key) return;
+    const lines = ordersByOid.get(key);
+    if (!lines || lines.length === 0) {
+      setMsg({ type: 'err', text: `Không tìm thấy đơn "${key}" trên sàn. Bạn vẫn có thể nhập mặt hàng thủ công.` });
+      return;
+    }
+    const items: Item[] = lines.map(l => {
+      const qty = Number(l.quantity) || 1;
+      const price = Number(l.price_deal) || 0;
+      return {
+        code: l.sku || '',
+        name: l.product_name || '',   // tên sản phẩm trên đơn
+        qty,
+        price,
+        amount: price * qty,
+      };
+    });
+    setForm(prev => ({ ...prev, items }));
+    setMsg({ type: 'ok', text: `Đã tự điền ${items.length} mặt hàng từ đơn ${key}.` });
+  };
+
+  // ---- Cập nhật 1 mặt hàng (tự tính thành tiền = giá bán × SL) ----
   const setItem = (idx: number, k: keyof Item, v: any) => {
     setForm(prev => {
-      const items = prev.items.map((it, i) =>
-        i === idx ? { ...it, [k]: k === 'qty' || k === 'amount' ? Number(v) || 0 : v } : it
-      );
+      const items = prev.items.map((it, i) => {
+        if (i !== idx) return it;
+        const next = { ...it, [k]: (k === 'qty' || k === 'price' || k === 'amount') ? Number(v) || 0 : v };
+        // Khi đổi giá bán hoặc số lượng → tự tính lại thành tiền
+        if (k === 'price' || k === 'qty') {
+          next.amount = (Number(next.price) || 0) * (Number(next.qty) || 0);
+        }
+        return next;
+      });
       return { ...prev, items };
     });
+  };
+
+  // ---- Chọn 1 mã hàng từ gợi ý → fill mã, tên (ưu tiên tên hóa đơn), giá bán ----
+  const pickProduct = (idx: number, p: ProductOpt) => {
+    setForm(prev => {
+      const items = prev.items.map((it, i) => {
+        if (i !== idx) return it;
+        const price = Number(p.price) || it.price || 0;
+        const qty = Number(it.qty) || 1;
+        return {
+          ...it,
+          code: p.sku,
+          name: (p.invoice_name && p.invoice_name.trim()) || p.name || it.name,
+          price,
+          amount: price * qty,
+        };
+      });
+      return { ...prev, items };
+    });
+    setActiveCodeRow(null);
+  };
+
+  // ---- Gợi ý mã hàng theo chuỗi đang gõ ----
+  const codeSuggestions = (q: string): ProductOpt[] => {
+    const s = q.trim().toLowerCase();
+    if (!s) return products.slice(0, 8);
+    return products
+      .filter(p =>
+        p.sku.toLowerCase().includes(s) ||
+        p.name.toLowerCase().includes(s) ||
+        (p.invoice_name || '').toLowerCase().includes(s)
+      )
+      .slice(0, 8);
   };
 
   const addItem = () => setForm(prev => ({ ...prev, items: [...prev.items, emptyItem()] }));
@@ -84,6 +173,7 @@ export default function ExternalInvoicesClient({ initialInvoices }: Props) {
     setForm(emptyForm());
     setEditingId(null);
     setMsg(null);
+    setActiveCodeRow(null);
   };
 
   // ---- Lưu (thêm mới hoặc cập nhật) ----
@@ -100,6 +190,7 @@ export default function ExternalInvoicesClient({ initialInvoices }: Props) {
         code: it.code.trim(),
         name: it.name.trim(),
         qty: Number(it.qty) || 0,
+        price: Number(it.price) || 0,
         amount: Number(it.amount) || 0,
       }));
     if (cleanItems.length === 0) {
@@ -165,7 +256,13 @@ export default function ExternalInvoicesClient({ initialInvoices }: Props) {
       tax_code: inv.tax_code || '',
       address: inv.address || '',
       email: inv.email || '',
-      items: inv.items?.length ? inv.items.map(it => ({ ...it })) : [emptyItem()],
+      items: inv.items?.length
+        ? inv.items.map(it => ({
+            ...it,
+            // Bản ghi cũ có thể chưa có price → suy ra từ thành tiền / SL
+            price: (it as any).price ?? (it.qty ? Math.round((it.amount || 0) / it.qty) : 0),
+          }))
+        : [emptyItem()],
       total_amount: inv.total_amount,
       note: inv.note || '',
     });
@@ -270,14 +367,26 @@ export default function ExternalInvoicesClient({ initialInvoices }: Props) {
           </div>
           <div>
             <label className={labelCls}>
-              Mã đơn hàng <span className="text-gray-400">(tùy chọn — nhập nếu là đơn trên sàn)</span>
+              Mã đơn hàng <span className="text-gray-400">(tùy chọn — nhập nếu là đơn trên sàn để tự điền mặt hàng)</span>
             </label>
-            <input
-              className={inputCls}
-              value={form.order_id || ''}
-              onChange={e => setField('order_id', e.target.value)}
-              placeholder="VD: 2605223BUYCHHY (để trống nếu đơn ngoài sàn)"
-            />
+            <div className="flex gap-2">
+              <input
+                className={inputCls}
+                value={form.order_id || ''}
+                onChange={e => setField('order_id', e.target.value)}
+                onBlur={e => { if (e.target.value.trim()) fillFromOrder(e.target.value); }}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); fillFromOrder(form.order_id || ''); } }}
+                placeholder="VD: 2605223BUYCHHY (để trống nếu đơn ngoài sàn)"
+              />
+              <button
+                type="button"
+                onClick={() => fillFromOrder(form.order_id || '')}
+                className="shrink-0 px-3 py-2 text-sm text-brand-700 border border-brand-200 bg-brand-50 rounded-md hover:bg-brand-100 transition whitespace-nowrap"
+                title="Tự điền mặt hàng từ đơn trên sàn"
+              >
+                Tự điền
+              </button>
+            </div>
           </div>
           <div>
             <label className={labelCls}>Ghi chú</label>
@@ -295,13 +404,14 @@ export default function ExternalInvoicesClient({ initialInvoices }: Props) {
           <Package size={16} className="text-gray-500" />
           <h3 className="text-sm font-medium text-gray-700">Mặt hàng</h3>
         </div>
-        <div className="border border-gray-200 rounded-md overflow-hidden mb-3">
+        <div className="border border-gray-200 rounded-md mb-3">
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-gray-600">
               <tr>
-                <th className="text-left px-3 py-2 font-medium w-32">Mã hàng</th>
+                <th className="text-left px-3 py-2 font-medium w-36">Mã hàng</th>
                 <th className="text-left px-3 py-2 font-medium">Tên mặt hàng</th>
-                <th className="text-right px-3 py-2 font-medium w-20">SL</th>
+                <th className="text-right px-3 py-2 font-medium w-24">SL</th>
+                <th className="text-right px-3 py-2 font-medium w-32">Giá bán</th>
                 <th className="text-right px-3 py-2 font-medium w-36">Thành tiền</th>
                 <th className="w-10"></th>
               </tr>
@@ -309,20 +419,49 @@ export default function ExternalInvoicesClient({ initialInvoices }: Props) {
             <tbody>
               {form.items.map((it, idx) => (
                 <tr key={idx} className="border-t border-gray-100">
-                  <td className="px-2 py-1.5">
+                  <td className="px-2 py-1.5 relative">
                     <input
                       className="w-full px-2 py-1 text-sm border border-transparent hover:border-gray-200 focus:border-brand-500 rounded focus:outline-none"
                       value={it.code}
-                      onChange={e => setItem(idx, 'code', e.target.value)}
-                      placeholder="OL215D"
+                      onChange={e => { setItem(idx, 'code', e.target.value); setActiveCodeRow(idx); }}
+                      onFocus={() => setActiveCodeRow(idx)}
+                      onBlur={() => setTimeout(() => setActiveCodeRow(c => (c === idx ? null : c)), 150)}
+                      placeholder="Gõ mã hàng…"
+                      autoComplete="off"
                     />
+                    {activeCodeRow === idx && products.length > 0 && (() => {
+                      const sugg = codeSuggestions(it.code);
+                      if (sugg.length === 0) return null;
+                      return (
+                        <div className="absolute z-20 left-2 right-2 mt-0.5 bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                          {sugg.map(p => (
+                            <button
+                              key={p.sku}
+                              type="button"
+                              onMouseDown={e => { e.preventDefault(); pickProduct(idx, p); }}
+                              className="w-full text-left px-3 py-2 hover:bg-brand-50 border-b border-gray-50 last:border-0"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-mono text-xs font-medium text-gray-700">{p.sku}</span>
+                                {p.price != null && p.price > 0 && (
+                                  <span className="text-xs text-gray-500">{fmt(p.price)}</span>
+                                )}
+                              </div>
+                              <div className="text-xs text-gray-500 truncate">
+                                {(p.invoice_name && p.invoice_name.trim()) || p.name}
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </td>
                   <td className="px-2 py-1.5">
                     <input
                       className="w-full px-2 py-1 text-sm border border-transparent hover:border-gray-200 focus:border-brand-500 rounded focus:outline-none"
                       value={it.name}
                       onChange={e => setItem(idx, 'name', e.target.value)}
-                      placeholder="Tên sản phẩm"
+                      placeholder="Tên hóa đơn (tự điền khi chọn mã)"
                     />
                   </td>
                   <td className="px-2 py-1.5">
@@ -337,8 +476,17 @@ export default function ExternalInvoicesClient({ initialInvoices }: Props) {
                     <input
                       type="number"
                       className="w-full px-2 py-1 text-sm text-right border border-transparent hover:border-gray-200 focus:border-brand-500 rounded focus:outline-none"
+                      value={it.price}
+                      onChange={e => setItem(idx, 'price', e.target.value)}
+                    />
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <input
+                      type="number"
+                      className="w-full px-2 py-1 text-sm text-right border border-transparent hover:border-gray-200 focus:border-brand-500 rounded focus:outline-none bg-gray-50"
                       value={it.amount}
                       onChange={e => setItem(idx, 'amount', e.target.value)}
+                      title="Tự tính = Giá bán × SL (có thể sửa tay)"
                     />
                   </td>
                   <td className="px-2 py-1.5 text-center">
@@ -355,7 +503,7 @@ export default function ExternalInvoicesClient({ initialInvoices }: Props) {
             </tbody>
             <tfoot>
               <tr className="border-t border-gray-200 bg-gray-50">
-                <td colSpan={3} className="px-3 py-2 text-right text-sm font-medium text-gray-600">
+                <td colSpan={4} className="px-3 py-2 text-right text-sm font-medium text-gray-600">
                   Tổng thành tiền
                 </td>
                 <td className="px-3 py-2 text-right text-sm font-bold text-brand-700">
