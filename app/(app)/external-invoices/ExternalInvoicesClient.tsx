@@ -31,6 +31,8 @@ export type ExternalInvoice = {
   items: Item[];
   total_amount: number;
   note: string | null;
+  is_exported?: boolean;
+  invoice_no?: string | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -39,6 +41,7 @@ type Props = {
   initialInvoices: ExternalInvoice[];
   products?: ProductOpt[];
   orders?: OrderRow[];
+  invoiceStatus?: { order_id: string; invoice_no: string | null }[];
 };
 
 const emptyItem = (): Item => ({ code: '', name: '', qty: 1, price: 0, amount: 0 });
@@ -52,9 +55,11 @@ const emptyForm = (): ExternalInvoice => ({
   items: [emptyItem()],
   total_amount: 0,
   note: '',
+  is_exported: false,
+  invoice_no: '',
 });
 
-export default function ExternalInvoicesClient({ initialInvoices, products = [], orders = [] }: Props) {
+export default function ExternalInvoicesClient({ initialInvoices, products = [], orders = [], invoiceStatus = [] }: Props) {
   const router = useRouter();
   const supabase = createClient();
 
@@ -89,6 +94,29 @@ export default function ExternalInvoicesClient({ initialInvoices, products = [],
     return m;
   }, [orders]);
 
+  // Set order_id có thật trên sàn (Shopee/TikTok) → dùng để gắn badge "Đơn ngoài"
+  const platformOrderIds = useMemo(() => {
+    const s = new Set<string>();
+    orders.forEach(o => { if (o.order_id) s.add(String(o.order_id).trim()); });
+    return s;
+  }, [orders]);
+
+  // Map order_id -> số hóa đơn (từ file Hóa đơn đã import) để tự đề xuất
+  const invoiceNoByOid = useMemo(() => {
+    const m = new Map<string, string>();
+    invoiceStatus.forEach(s => {
+      const oid = String(s.order_id || '').trim();
+      if (oid && s.invoice_no) m.set(oid, s.invoice_no);
+    });
+    return m;
+  }, [invoiceStatus]);
+
+  // Đơn có phải "đơn ngoài" không (mã trống hoặc không khớp đơn sàn)
+  const isExternal = (orderId: string | null) => {
+    const oid = String(orderId || '').trim();
+    return !oid || !platformOrderIds.has(oid);
+  };
+
   // ---- Tự fill mặt hàng từ mã đơn (ghi đè toàn bộ) khi mã khớp đơn trên sàn ----
   const fillFromOrder = (oid: string) => {
     const key = oid.trim();
@@ -109,7 +137,12 @@ export default function ExternalInvoicesClient({ initialInvoices, products = [],
         amount: price * qty,
       };
     });
-    setForm(prev => ({ ...prev, items }));
+    setForm(prev => ({
+      ...prev,
+      items,
+      // Tự đề xuất số HĐ từ file Hóa đơn (cho sửa tay sau)
+      invoice_no: invoiceNoByOid.get(key) || prev.invoice_no || '',
+    }));
     setMsg({ type: 'ok', text: `Đã tự điền ${items.length} mặt hàng từ đơn ${key}.` });
   };
 
@@ -217,6 +250,8 @@ export default function ExternalInvoicesClient({ initialInvoices, products = [],
         items: cleanItems,
         total_amount: cleanItems.reduce((s, it) => s + it.amount, 0),
         note: form.note?.trim() || null,
+        is_exported: !!form.is_exported,
+        invoice_no: form.invoice_no?.trim() || null,
         updated_at: new Date().toISOString(),
       };
 
@@ -265,6 +300,8 @@ export default function ExternalInvoicesClient({ initialInvoices, products = [],
         : [emptyItem()],
       total_amount: inv.total_amount,
       note: inv.note || '',
+      is_exported: !!inv.is_exported,
+      invoice_no: inv.invoice_no || '',
     });
     setEditingId(inv.id || null);
     setMsg(null);
@@ -283,6 +320,41 @@ export default function ExternalInvoicesClient({ initialInvoices, products = [],
       router.refresh();
     } catch (e: any) {
       setMsg({ type: 'err', text: `Lỗi khi xóa: ${e?.message || 'không xác định'}` });
+    }
+  };
+
+  // ---- Tick "Đã xuất HĐ" trực tiếp trên bảng ----
+  const toggleExported = async (inv: ExternalInvoice) => {
+    if (!inv.id) return;
+    const next = !inv.is_exported;
+    setInvoices(prev => prev.map(i => (i.id === inv.id ? { ...i, is_exported: next } : i)));
+    try {
+      const { error } = await supabase
+        .from('external_invoices')
+        .update({ is_exported: next, updated_at: new Date().toISOString() })
+        .eq('id', inv.id);
+      if (error) throw error;
+    } catch (e: any) {
+      // Khôi phục nếu lỗi
+      setInvoices(prev => prev.map(i => (i.id === inv.id ? { ...i, is_exported: !next } : i)));
+      setMsg({ type: 'err', text: `Lỗi cập nhật: ${e?.message || 'không xác định'}` });
+    }
+  };
+
+  // ---- Sửa số hóa đơn trực tiếp trên bảng (lưu khi rời ô) ----
+  const saveInvoiceNo = async (inv: ExternalInvoice, value: string) => {
+    if (!inv.id) return;
+    const v = value.trim() || null;
+    if ((inv.invoice_no || null) === v) return; // không đổi
+    setInvoices(prev => prev.map(i => (i.id === inv.id ? { ...i, invoice_no: v } : i)));
+    try {
+      const { error } = await supabase
+        .from('external_invoices')
+        .update({ invoice_no: v, updated_at: new Date().toISOString() })
+        .eq('id', inv.id);
+      if (error) throw error;
+    } catch (e: any) {
+      setMsg({ type: 'err', text: `Lỗi cập nhật số HĐ: ${e?.message || 'không xác định'}` });
     }
   };
 
@@ -396,6 +468,28 @@ export default function ExternalInvoicesClient({ initialInvoices, products = [],
               onChange={e => setField('note', e.target.value)}
               placeholder="Ghi chú thêm (nếu có)"
             />
+          </div>
+          <div>
+            <label className={labelCls}>
+              Số hóa đơn <span className="text-gray-400">(đơn từ sàn sẽ tự đề xuất)</span>
+            </label>
+            <input
+              className={inputCls}
+              value={form.invoice_no || ''}
+              onChange={e => setField('invoice_no', e.target.value)}
+              placeholder="Số HĐ (nếu đã có)"
+            />
+          </div>
+          <div className="flex items-end pb-1">
+            <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={!!form.is_exported}
+                onChange={e => setField('is_exported', e.target.checked)}
+                className="w-4 h-4 accent-brand-600"
+              />
+              Đã xuất hóa đơn
+            </label>
           </div>
         </div>
 
@@ -570,13 +664,15 @@ export default function ExternalInvoicesClient({ initialInvoices, products = [],
                 <th className="text-left px-3 py-2.5 font-medium">Email</th>
                 <th className="text-left px-3 py-2.5 font-medium">Mặt hàng</th>
                 <th className="text-right px-3 py-2.5 font-medium">Tổng tiền</th>
+                <th className="text-center px-3 py-2.5 font-medium w-24">Đã xuất HĐ</th>
+                <th className="text-left px-3 py-2.5 font-medium w-36">Số HĐ</th>
                 <th className="w-20"></th>
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-3 py-10 text-center text-gray-400">
+                  <td colSpan={9} className="px-3 py-10 text-center text-gray-400">
                     Chưa có hóa đơn ngoài nào. Nhập ở form phía trên để thêm.
                   </td>
                 </tr>
@@ -587,7 +683,12 @@ export default function ExternalInvoicesClient({ initialInvoices, products = [],
                       {inv.order_id ? (
                         <span className="font-mono text-xs">{inv.order_id}</span>
                       ) : (
-                        <span className="text-xs text-gray-400 italic">Ngoài sàn</span>
+                        <span className="text-xs text-gray-400">—</span>
+                      )}
+                      {isExternal(inv.order_id) && (
+                        <span className="ml-1 inline-block px-1.5 py-0.5 text-[10px] font-medium rounded bg-purple-100 text-purple-700 align-middle">
+                          Đơn ngoài
+                        </span>
                       )}
                     </td>
                     <td className="px-3 py-2.5 align-top">
@@ -612,6 +713,25 @@ export default function ExternalInvoicesClient({ initialInvoices, products = [],
                     </td>
                     <td className="px-3 py-2.5 align-top text-right font-semibold">
                       {fmt(inv.total_amount)}
+                    </td>
+                    <td className="px-3 py-2.5 align-top text-center">
+                      <input
+                        type="checkbox"
+                        checked={!!inv.is_exported}
+                        onChange={() => toggleExported(inv)}
+                        className="w-4 h-4 accent-brand-600 cursor-pointer"
+                        title="Đánh dấu đã xuất hóa đơn"
+                      />
+                    </td>
+                    <td className="px-3 py-2.5 align-top">
+                      <input
+                        key={`inv-no-${inv.id}-${inv.invoice_no || ''}`}
+                        defaultValue={inv.invoice_no || ''}
+                        onBlur={e => saveInvoiceNo(inv, e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                        placeholder="Nhập số HĐ"
+                        className="w-32 px-2 py-1 text-xs border border-gray-200 rounded focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500"
+                      />
                     </td>
                     <td className="px-3 py-2.5 align-top">
                       <div className="flex items-center gap-1 justify-end">
