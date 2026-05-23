@@ -33,6 +33,7 @@ type InvStatus = {
   invoice_value?: number;
   invoice_status?: string;         // Cột H trong file (giữ để tham khảo)
   release_status?: string;         // TT phát hành HĐ (cột K)
+  cqt_status?: string;             // TT gửi CQT (cột M)
   invoice_type?: string;
 };
 
@@ -51,6 +52,7 @@ const DEFAULT_COLS: ColDef[] = [
   { key: 'exportStatus',        width: 140, minWidth: 110 },
   { key: 'releaseStatus',       width: 140, minWidth: 110 },
   { key: 'invoiceNo',           width: 130, minWidth: 100 },
+  { key: 'cqtStatus',           width: 130, minWidth: 100 },
   { key: 'warning',             width: 240, minWidth: 150 },
 ];
 
@@ -155,6 +157,8 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       const exportStatusText = misaRec?.export_status ?? null;
       // TT phát hành HĐ = cột K "TT phát hành hóa đơn" trong file Hoa_don
       const releaseStatusText = statusRec?.release_status ?? null;
+      // TT gửi CQT = cột M "TT gửi CQT" trong file Hoa_don
+      const cqtStatusText = statusRec?.cqt_status ?? null;
 
       // Cờ tiện ích dùng cho các cảnh báo bên dưới
       const daXuatHD = norm(exportStatusText).includes('đã xuất'); // cột L = "Đã xuất hóa đơn"
@@ -264,6 +268,7 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         invoiceValue,
         exportStatusText,
         releaseStatusText,
+        cqtStatusText,
         statusFinal,
         warnings,
         misaRec,
@@ -572,6 +577,7 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         const c_type = idx('Loại');
         const c_status = idx('Trạng thái hóa đơn');            // Cột H
         const c_release = idx('TT phát hành hóa đơn');          // Cột K
+        const c_cqt = idx('TT gửi CQT');                        // Cột M
 
         if (c_orderId === -1) {
           setAlert({ type: 'error', text: `File "${f.name}" thiếu cột Số đơn hàng từ hệ thống khác` });
@@ -599,6 +605,7 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
             invoice_type: c_type >= 0 ? String(row[c_type] ?? '').trim() : '',
             invoice_status: c_status >= 0 ? String(row[c_status] ?? '').trim() : '',
             release_status: c_release >= 0 ? String(row[c_release] ?? '').trim() : '',
+            cqt_status: c_cqt >= 0 ? String(row[c_cqt] ?? '').trim() : '',
           });
         }
       }
@@ -838,11 +845,14 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
             <ColHeader label="Số HĐ" colKey="invoiceNo" width={colW('invoiceNo')} onResize={w => setWidth('invoiceNo', w)}
               filterable filterType="text"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
-            <th>Cảnh báo</th>
+            <ColHeader label="TT gửi CQT" colKey="cqtStatus" width={colW('cqtStatus')} onResize={w => setWidth('cqtStatus', w)}
+              filterable filterType="list"
+              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} onPageChange={() => setPage(1)} />
+            <ColHeader label="Cảnh báo" colKey="warning" width={colW('warning')} onResize={w => setWidth('warning', w)} />
           </tr></thead>
           <tbody>
             {pageRows.length === 0 && (
-              <tr><td colSpan={15} className="text-center text-gray-400 py-12">
+              <tr><td colSpan={16} className="text-center text-gray-400 py-12">
                 Không có dữ liệu
               </td></tr>
             )}
@@ -887,6 +897,17 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
                   </td>
                   <td className="text-xs font-mono">
                     {r.invoiceNo || <span className="text-gray-300">—</span>}
+                  </td>
+                  <td>
+                    {!r.statusRec
+                      ? <span className="text-gray-400">N/A</span>
+                      : r.cqtStatusText
+                      ? <span className={`tag ${
+                          norm(r.cqtStatusText).includes('đã gửi') ? 'bg-green-100 text-green-700'
+                            : norm(r.cqtStatusText).includes('chưa gửi') ? 'bg-yellow-100 text-yellow-700'
+                            : 'bg-gray-100 text-gray-600'
+                        }`}>{r.cqtStatusText}</span>
+                      : <span className="text-gray-300">—</span>}
                   </td>
                   <td>
                     {r.warnings.length === 0
