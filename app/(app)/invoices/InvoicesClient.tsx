@@ -480,6 +480,25 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
           .gte('misa_date', minDate)
           .lte('misa_date', maxDate);
         if (delErr) throw delErr;
+
+        // Dọn các bản ghi cũ KHÔNG có ngày (misa_date null) — dữ liệu lỗi từ lần import cũ,
+        // range-delete theo ngày không với tới được. Chỉ xóa nếu đơn đó không có trong file mới.
+        const newIds = new Set(payload.map(p => p.order_id));
+        const { data: nullRows } = await supabase
+          .from('misa_orders')
+          .select('id, order_id')
+          .eq('user_id', user.id)
+          .is('misa_date', null);
+        const orphanIds = (nullRows || [])
+          .filter(r => !newIds.has(r.order_id))
+          .map(r => r.id);
+        if (orphanIds.length > 0) {
+          const { error: delNullErr } = await supabase
+            .from('misa_orders')
+            .delete()
+            .in('id', orphanIds);
+          if (delNullErr) throw delNullErr;
+        }
       }
 
       const BATCH = 500;
@@ -603,6 +622,24 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
           .gte('invoice_date', minDate)
           .lte('invoice_date', maxDate);
         if (delErr) throw delErr;
+
+        // Dọn các bản ghi cũ không có ngày (invoice_date null) không còn trong file mới
+        const newIds = new Set(payload.map(p => p.order_id));
+        const { data: nullRows } = await supabase
+          .from('invoice_status')
+          .select('id, order_id')
+          .eq('user_id', user.id)
+          .is('invoice_date', null);
+        const orphanIds = (nullRows || [])
+          .filter(r => !newIds.has(r.order_id))
+          .map(r => r.id);
+        if (orphanIds.length > 0) {
+          const { error: delNullErr } = await supabase
+            .from('invoice_status')
+            .delete()
+            .in('id', orphanIds);
+          if (delNullErr) throw delNullErr;
+        }
       }
 
       const BATCH = 500;
