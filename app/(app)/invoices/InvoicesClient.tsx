@@ -903,7 +903,7 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
                       ? <span className="text-gray-400">N/A</span>
                       : r.cqtStatusText
                       ? <span className={`tag ${
-                          norm(r.cqtStatusText).includes('đã gửi') ? 'bg-green-100 text-green-700'
+                          norm(r.cqtStatusText).includes('đã gửi') || norm(r.cqtStatusText).includes('hợp lệ') ? 'bg-green-100 text-green-700'
                             : norm(r.cqtStatusText).includes('chưa gửi') ? 'bg-yellow-100 text-yellow-700'
                             : 'bg-gray-100 text-gray-600'
                         }`}>{r.cqtStatusText}</span>
