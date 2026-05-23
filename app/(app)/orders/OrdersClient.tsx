@@ -221,7 +221,7 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
       // = Tổng phí thực tế của đơn ÷ Giá trị đơn hàng (áp dụng cả Shopee & TikTok)
       // TikTok: phí nằm ở totalFee; Shopee: phí nằm ở feeTTLK
       const effectiveFee = (totalFee || 0) + (feeTTLK || 0);
-      const feePercent = (isMainRow && orderValue > 0) ? (effectiveFee / orderValue) * 100 : null;
+      const feePercent = (isMainRow && orderValue > 0) ? Math.abs((effectiveFee / orderValue) * 100) : null;
 
       return {
         o, price, quantity, orderValue, totalFee, feeTTLK, revenue, cogs, profit,
@@ -1283,8 +1283,8 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
               <td className="text-right font-semibold">{fmt(totals.totalQty)}</td>
               <td></td>
               <td className="text-right font-semibold">{fmt(totals.totalOrderValue)}</td>
-              <td className="text-right font-semibold text-yellow-600">{fmt(totals.totalFee)}</td>
-              <td className="text-right font-semibold text-orange-600">{fmt(totals.totalFeeTTLK)}</td>
+              <td className="text-right font-semibold text-yellow-600">{fmt(Math.abs(totals.totalFee))}</td>
+              <td className="text-right font-semibold text-orange-600">{fmt(Math.abs(totals.totalFeeTTLK))}</td>
               <td className={`text-right font-semibold ${totals.totalShopeePayout < 0 ? 'text-red-600' : ''}`}>
                 {totals.countShopeePayout > 0 ? fmt(totals.totalShopeePayout) : <span className="text-gray-300">—</span>}
               </td>
@@ -1293,7 +1293,7 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
               </td>
               <td className="text-right font-semibold text-gray-600">
                 {totals.totalOrderValue > 0
-                  ? `${(((totals.totalFee + totals.totalFeeTTLK) / totals.totalOrderValue) * 100).toFixed(1)}%`
+                  ? `${Math.abs(((totals.totalFee + totals.totalFeeTTLK) / totals.totalOrderValue) * 100).toFixed(1)}%`
                   : <span className="text-gray-300">—</span>}
               </td>
               <td className="text-right font-semibold">{fmt(totals.totalCogs)}</td>
@@ -1324,12 +1324,12 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
                   <td className="text-right font-medium">{fmt(r.orderValue)}</td>
                   <td className="text-right">
                     {r.o.platform === 'tiktok' && r.isMainRow && r.totalFee !== 0
-                      ? <span className={r.totalFee < 0 ? 'text-red-600' : 'text-yellow-600'}>{fmt(r.totalFee)}</span>
+                      ? <span className="text-yellow-600">{fmt(Math.abs(r.totalFee))}</span>
                       : <span className="text-gray-300">—</span>}
                   </td>
                   <td className="text-right">
                     {r.o.platform === 'shopee' && r.hasPayout && r.isMainRow
-                      ? <span className={r.feeTTLK < 0 ? 'text-red-600' : 'text-orange-600'}>{fmt(r.feeTTLK)}</span>
+                      ? <span className="text-orange-600">{fmt(Math.abs(r.feeTTLK))}</span>
                       : <span className="text-gray-300">—</span>}
                   </td>
                   <td className="text-right">
