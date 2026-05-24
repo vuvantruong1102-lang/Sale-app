@@ -655,18 +655,18 @@ export default function ExternalInvoicesClient({ initialInvoices, products = [],
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
             <thead className="bg-gray-50 text-gray-600">
               <tr>
-                <th className="text-left px-3 py-2.5 font-medium w-32">Mã đơn</th>
-                <th className="text-left px-3 py-2.5 font-medium min-w-[220px]">Công ty</th>
-                <th className="text-left px-3 py-2.5 font-medium w-28">MST</th>
-                <th className="text-left px-3 py-2.5 font-medium w-44">Email</th>
-                <th className="text-left px-3 py-2.5 font-medium w-72">Mặt hàng</th>
-                <th className="text-right px-3 py-2.5 font-medium w-24">Tổng tiền</th>
-                <th className="text-center px-3 py-2.5 font-medium w-20">Đã xuất HĐ</th>
-                <th className="text-left px-3 py-2.5 font-medium w-32">Số HĐ</th>
-                <th className="w-16"></th>
+                <th style={{ width: 130, resize: 'horizontal', overflow: 'hidden' }} className="text-left px-3 py-2.5 font-medium">Mã đơn</th>
+                <th style={{ width: 240, resize: 'horizontal', overflow: 'hidden' }} className="text-left px-3 py-2.5 font-medium">Công ty</th>
+                <th style={{ width: 120, resize: 'horizontal', overflow: 'hidden' }} className="text-left px-3 py-2.5 font-medium">MST</th>
+                <th style={{ width: 180, resize: 'horizontal', overflow: 'hidden' }} className="text-left px-3 py-2.5 font-medium">Email</th>
+                <th style={{ width: 300, resize: 'horizontal', overflow: 'hidden' }} className="text-left px-3 py-2.5 font-medium">Mặt hàng</th>
+                <th style={{ width: 110, resize: 'horizontal', overflow: 'hidden' }} className="text-right px-3 py-2.5 font-medium">Tổng tiền</th>
+                <th style={{ width: 90, resize: 'horizontal', overflow: 'hidden' }} className="text-center px-3 py-2.5 font-medium">Đã xuất HĐ</th>
+                <th style={{ width: 130, resize: 'horizontal', overflow: 'hidden' }} className="text-left px-3 py-2.5 font-medium">Số HĐ</th>
+                <th style={{ width: 70 }}></th>
               </tr>
             </thead>
             <tbody>
