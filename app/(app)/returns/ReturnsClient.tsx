@@ -1,11 +1,11 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
-import { fmt, fmtDate, norm, shortStatus, tagClass } from '@/lib/utils';
+import { fmt, fmtDate, norm, shortStatus, tagClass, parseDate } from '@/lib/utils';
 import { Order, Return } from '@/lib/types';
-import { Download, Search, Check } from 'lucide-react';
+import { Download, Search, Check, Upload, AlertTriangle } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useResizableCols, ColDef } from '@/lib/useResizableCols';
 import { ColHeader, ColFilter } from '@/components/ColHeader';
@@ -63,10 +63,9 @@ const DEFAULT_COLS: ColDef[] = [
   { key: 'returnedQty',         width: 80,  minWidth: 60 },
   { key: 'orderType',           width: 130, minWidth: 100 },
   { key: 'invoiceNo',           width: 130, minWidth: 100 },
-  { key: 'releaseStatus',       width: 140, minWidth: 110 },
   { key: 'adjustmentInvoiceNo', width: 140, minWidth: 110 },
-  { key: 'shopReceived',        width: 110, minWidth: 90 },
   { key: 'goodsCondition',      width: 180, minWidth: 130 },
+  { key: 'warning',             width: 200, minWidth: 130 },
 ];
 
 export default function ReturnsClient({ initialOrders, initialReturns, reconciliation, initialInvStatus }: Props) {
@@ -307,6 +306,91 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
     }
   };
 
+  // ===== Import file "Trả lại hàng bán" (MISA) — điền Số HĐ Điều chỉnh =====
+  const returnFileRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
+  const [alert, setAlert] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
+  const handleImportReturn = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    setImporting(true);
+    setAlert(null);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { setAlert({ type: 'err', text: 'Phiên đăng nhập hết hạn.' }); setImporting(false); return; }
+
+      // Gom map: order_id (cột "Số đơn hàng từ hệ thống khác") -> số hóa đơn (cột "Số hóa đơn")
+      const adjByOid = new Map<string, string>();
+      for (const f of files) {
+        const buf = await f.arrayBuffer();
+        const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+        const sh = wb.Sheets[wb.SheetNames[0]];
+        const rows: any[][] = XLSX.utils.sheet_to_json(sh, { header: 1, defval: null, raw: true });
+        // tìm dòng header
+        let hr = -1;
+        for (let i = 0; i < 6; i++) {
+          if ((rows[i] || []).some(c => norm(c).includes('số đơn hàng từ hệ thống khác'))) { hr = i; break; }
+        }
+        if (hr < 0) continue;
+        const headers = (rows[hr] || []).map(h => norm(h));
+        const c_oid = headers.findIndex(h => h.includes('số đơn hàng từ hệ thống khác'));
+        const c_invno = headers.findIndex(h => h === 'số hóa đơn');
+        if (c_oid < 0 || c_invno < 0) continue;
+        for (let i = hr + 1; i < rows.length; i++) {
+          const oid = String(rows[i]?.[c_oid] ?? '').trim();
+          const invNo = String(rows[i]?.[c_invno] ?? '').trim();
+          if (!oid || !invNo) continue;
+          adjByOid.set(oid, invNo);
+        }
+      }
+
+      if (adjByOid.size === 0) {
+        setAlert({ type: 'err', text: 'Không tìm thấy dữ liệu hợp lệ (cần cột "Số đơn hàng từ hệ thống khác" và "Số hóa đơn").' });
+        setImporting(false);
+        return;
+      }
+
+      // Chỉ điền vào ô đang TRỐNG (không ghi đè số đã nhập tay)
+      const existingMap = new Map(invStatus.map(r => [r.order_id, r]));
+      const toUpsert: any[] = [];
+      adjByOid.forEach((invNo, oid) => {
+        const ex = existingMap.get(oid);
+        const cur = ex?.adjustment_invoice_no;
+        if (!cur || !cur.trim()) {
+          toUpsert.push({ user_id: user.id, order_id: oid, adjustment_invoice_no: invNo });
+        }
+      });
+
+      if (toUpsert.length === 0) {
+        setAlert({ type: 'ok', text: `Đã khớp ${adjByOid.size} đơn — tất cả đã có số HĐ điều chỉnh (không ghi đè).` });
+        setImporting(false);
+        if (returnFileRef.current) returnFileRef.current.value = '';
+        return;
+      }
+
+      const BATCH = 500;
+      for (let i = 0; i < toUpsert.length; i += BATCH) {
+        const slice = toUpsert.slice(i, i + BATCH);
+        const { error } = await supabase
+          .from('invoice_status')
+          .upsert(slice, { onConflict: 'user_id,order_id', ignoreDuplicates: false });
+        if (error) throw error;
+      }
+
+      // Tải lại invoice_status
+      const { data: fresh } = await supabase.from('invoice_status').select('*');
+      setInvStatus((fresh as InvStatus[]) || []);
+      setAlert({ type: 'ok', text: `Đã điền số HĐ điều chỉnh cho ${toUpsert.length} đơn.` });
+      router.refresh();
+    } catch (err: any) {
+      setAlert({ type: 'err', text: `Lỗi import: ${err?.message || 'không xác định'}` });
+    } finally {
+      setImporting(false);
+      if (returnFileRef.current) returnFileRef.current.value = '';
+    }
+  };
+
   const updateAdjustmentInvoiceNo = async (orderId: string, newVal: string) => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
@@ -394,6 +478,14 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
       </div>
 
       <div className="flex flex-wrap gap-3 mb-4 items-center">
+        <button
+          className="btn btn-primary"
+          onClick={() => returnFileRef.current?.click()}
+          disabled={importing}
+        >
+          <Upload size={15} /> {importing ? 'Đang import…' : 'TT Trả/Hoàn hàng'}
+        </button>
+        <input ref={returnFileRef} type="file" accept=".xlsx,.xls,.csv" multiple className="hidden" onChange={handleImportReturn} />
         <div className="relative flex-1 min-w-[200px] max-w-[400px]">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input className="input pl-9 w-full" placeholder="Tìm mã đơn, SP, SKU..."
@@ -409,6 +501,14 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
           </button>
         )}
       </div>
+
+      {alert && (
+        <div className={`mb-4 px-4 py-2.5 rounded-md text-sm ${
+          alert.type === 'ok' ? 'bg-green-50 text-green-700 border border-green-100' : 'bg-red-50 text-red-600 border border-red-100'
+        }`}>
+          {alert.text}
+        </div>
+      )}
 
       <div className="card !p-0 overflow-x-auto">
         <table className="tbl orders-tbl" style={{ width: totalWidth }}>
@@ -452,18 +552,13 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
             <ColHeader label="Số HĐ" colKey="invoiceNo" width={colW('invoiceNo')} onResize={w => setWidth('invoiceNo', w)}
               filterable filterType="text"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
-            <ColHeader label="TT phát hành HĐ" colKey="releaseStatus" width={colW('releaseStatus')} onResize={w => setWidth('releaseStatus', w)}
-              filterable filterType="list" filterValues={Array.from(uniqueValues.releaseStatuses)}
-              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
             <ColHeader label="Số HĐ điều chỉnh" colKey="adjustmentInvoiceNo" width={colW('adjustmentInvoiceNo')} onResize={w => setWidth('adjustmentInvoiceNo', w)}
               filterable filterType="text"
-              filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
-            <ColHeader label="Shop đã nhận" colKey="shopReceived" width={colW('shopReceived')} onResize={w => setWidth('shopReceived', w)}
-              filterable filterType="list" filterValues={['Đã nhận', 'Chưa nhận']}
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
             <ColHeader label="Tình trạng hàng hoàn" colKey="goodsCondition" width={colW('goodsCondition')} onResize={w => setWidth('goodsCondition', w)}
               filterable filterType="text"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
+            <ColHeader label="Cảnh báo" colKey="warning" width={colW('warning')} onResize={w => setWidth('warning', w)} />
           </tr></thead>
           <tbody>
             {filtered.length === 0 && (
@@ -516,19 +611,6 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
                       : ''}
                   </td>
                   <td>
-                    {showOrderCols
-                      ? (r.releaseStatus
-                          ? <span className={`tag ${
-                              norm(r.releaseStatus).includes('đã phát hành') || norm(r.releaseStatus).includes('đã cấp mã')
-                                ? 'bg-green-100 text-green-700'
-                                : norm(r.releaseStatus).includes('hủy')
-                                ? 'bg-red-100 text-red-700'
-                                : 'bg-yellow-100 text-yellow-700'
-                            }`}>{r.releaseStatus}</span>
-                          : <span className="text-gray-300">—</span>)
-                      : ''}
-                  </td>
-                  <td>
                     {showOrderCols ? (
                       <input type="text" className="input input-sm w-full text-xs"
                         placeholder="Nhập số HĐ ĐC..."
@@ -538,21 +620,6 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
                           if (v !== r.adjustmentInvoiceNo) updateAdjustmentInvoiceNo(r.orderId, v);
                         }}
                       />
-                    ) : ''}
-                  </td>
-                  <td className="text-center">
-                    {showOrderCols ? (
-                      <button
-                        onClick={() => toggleShopReceived(r.orderId, r.shopReceived)}
-                        className={`inline-flex items-center justify-center w-6 h-6 rounded border ${
-                          r.shopReceived
-                            ? 'bg-green-500 border-green-500 text-white'
-                            : 'bg-white border-gray-300 hover:border-gray-400'
-                        }`}
-                        title={r.shopReceived ? 'Đã nhận - click để bỏ' : 'Chưa nhận - click để đánh dấu'}
-                      >
-                        {r.shopReceived ? <Check size={14} /> : null}
-                      </button>
                     ) : ''}
                   </td>
                   <td>
@@ -566,6 +633,15 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
                         }}
                       />
                     ) : ''}
+                  </td>
+                  <td>
+                    {showOrderCols
+                      ? (!r.adjustmentInvoiceNo || !r.adjustmentInvoiceNo.trim()
+                          ? <span className="text-xs text-red-600 flex items-start gap-1">
+                              <AlertTriangle size={11} className="mt-0.5 flex-shrink-0" /> Chưa có số HĐ điều chỉnh
+                            </span>
+                          : <span className="text-gray-300">—</span>)
+                      : ''}
                   </td>
                 </tr>
               );
