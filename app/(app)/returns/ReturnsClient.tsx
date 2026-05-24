@@ -351,19 +351,14 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
         return;
       }
 
-      // Chỉ điền vào ô đang TRỐNG (không ghi đè số đã nhập tay)
-      const existingMap = new Map(invStatus.map(r => [r.order_id, r]));
+      // Số HĐ điều chỉnh chỉ đến từ file → luôn cập nhật theo file mới nhất
       const toUpsert: any[] = [];
       adjByOid.forEach((invNo, oid) => {
-        const ex = existingMap.get(oid);
-        const cur = ex?.adjustment_invoice_no;
-        if (!cur || !cur.trim()) {
-          toUpsert.push({ user_id: user.id, order_id: oid, adjustment_invoice_no: invNo });
-        }
+        toUpsert.push({ user_id: user.id, order_id: oid, adjustment_invoice_no: invNo });
       });
 
       if (toUpsert.length === 0) {
-        setAlert({ type: 'ok', text: `Đã khớp ${adjByOid.size} đơn — tất cả đã có số HĐ điều chỉnh (không ghi đè).` });
+        setAlert({ type: 'ok', text: `Đã khớp ${adjByOid.size} đơn.` });
         setImporting(false);
         if (returnFileRef.current) returnFileRef.current.value = '';
         return;
@@ -555,7 +550,7 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
             <ColHeader label="Số HĐ điều chỉnh" colKey="adjustmentInvoiceNo" width={colW('adjustmentInvoiceNo')} onResize={w => setWidth('adjustmentInvoiceNo', w)}
               filterable filterType="text"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
-            <ColHeader label="Tình trạng hàng hoàn" colKey="goodsCondition" width={colW('goodsCondition')} onResize={w => setWidth('goodsCondition', w)}
+            <ColHeader label="Ghi chú" colKey="goodsCondition" width={colW('goodsCondition')} onResize={w => setWidth('goodsCondition', w)}
               filterable filterType="text"
               filters={colFilters} setFilters={setColFilters} open={openFilter} setOpen={setOpenFilter} />
             <ColHeader label="Cảnh báo" colKey="warning" width={colW('warning')} onResize={w => setWidth('warning', w)} />
@@ -611,21 +606,16 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
                       : ''}
                   </td>
                   <td>
-                    {showOrderCols ? (
-                      <input type="text" className="input input-sm w-full text-xs"
-                        placeholder="Nhập số HĐ ĐC..."
-                        defaultValue={r.adjustmentInvoiceNo}
-                        onBlur={e => {
-                          const v = e.target.value.trim();
-                          if (v !== r.adjustmentInvoiceNo) updateAdjustmentInvoiceNo(r.orderId, v);
-                        }}
-                      />
-                    ) : ''}
+                    {showOrderCols
+                      ? (r.adjustmentInvoiceNo && r.adjustmentInvoiceNo.trim()
+                          ? <span className="tag bg-green-100 text-green-700">{r.adjustmentInvoiceNo}</span>
+                          : <span className="text-gray-300">—</span>)
+                      : ''}
                   </td>
                   <td>
                     {showOrderCols ? (
                       <input type="text" className="input input-sm w-full text-xs"
-                        placeholder="Vd: Còn mới, Hỏng, Thiếu..."
+                        placeholder="Ghi chú..."
                         defaultValue={r.goodsCondition}
                         onBlur={e => {
                           const v = e.target.value.trim();
