@@ -226,14 +226,10 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         }
       }
 
-      // Đơn chưa gửi hàng nhưng đã xuất HĐ — bỏ qua nếu HĐ chưa phát hành (chưa có hiệu lực)
-      if (!hasShipped && !isCancelled && misaRec && daXuatHD && !hdChuaPhatHanh) {
+      // Đơn "Chờ giao" (chưa gửi hàng) nhưng ĐÃ XUẤT HĐ → luôn cảnh báo
+      // Dùng trạng thái "Chờ giao" (không dựa date_ship) để áp dụng cho cả Shopee lẫn TikTok
+      if (isPendingShip && !isCancelled && misaRec && daXuatHD) {
         warnings.push('Chưa gửi hàng nhưng đã xuất HĐ');
-      }
-
-      // Đơn "Chờ giao" + đã xuất HĐ + HĐ chưa phát hành
-      if (isPendingShip && !isCancelled && misaRec && daXuatHD && hdChuaPhatHanh) {
-        warnings.push('Đơn chưa giao, chưa phát hành HĐ');
       }
 
       // TT phát hành HĐ — cảnh báo các bất thường (KHÔNG cảnh báo "chưa phát hành")
