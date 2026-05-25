@@ -204,7 +204,8 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         }
       } else {
         // Đơn đã gửi hàng nhưng chưa xuất HĐ — bỏ qua nếu đơn còn "Chờ giao" (chưa giao xong)
-        if (hasShipped && !isPendingShip && !isCancelled && !misaRec) {
+        // Áp dụng cả khi có MISA nhưng MISA ghi "Chưa xuất hóa đơn" (chưa thực sự xuất HĐ)
+        if (hasShipped && !isPendingShip && !isCancelled && !daXuatHD) {
           warnings.push('Chưa xuất HĐ (đã gửi hàng)');
         }
       }
