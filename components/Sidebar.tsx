@@ -44,7 +44,7 @@ export default function Sidebar({ email, width = 240 }: { email?: string; width?
           </div>
           <div className="min-w-0">
             <div className={`font-bold leading-tight truncate ${compact ? 'text-xs' : 'text-sm'}`}>Quản lý bán hàng</div>
-            <div className="text-[10px] text-gray-500 leading-tight truncate">Shopee + TikTok Shop</div>
+            <div className="text-[10px] text-gray-500 leading-tight truncate">Webapp</div>
           </div>
         </div>
       </div>
