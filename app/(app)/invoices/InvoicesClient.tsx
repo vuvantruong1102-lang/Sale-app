@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import { Order } from '@/lib/types';
@@ -82,6 +82,48 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
   const misaFileRef = useRef<HTMLInputElement>(null);
   const statusFileRef = useRef<HTMLInputElement>(null);
 
+  // ===== Đơn đã gửi hàng nhưng phần mềm chưa cập nhật (nhập tay hằng ngày) =====
+  // Lưu localStorage kèm ngày. Sang ngày mới, danh sách cũ tự động bị xóa.
+  const MANUAL_SHIP_KEY = 'invoices-manual-shipped';
+  const todayStr = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  const [manualShipText, setManualShipText] = useState('');
+
+  // Nạp danh sách đã lưu khi mở trang; nếu khác ngày hôm nay thì xóa
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(MANUAL_SHIP_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as { date: string; text: string };
+      if (saved.date === todayStr()) {
+        setManualShipText(saved.text || '');
+      } else {
+        localStorage.removeItem(MANUAL_SHIP_KEY);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  // Lưu lại mỗi khi người dùng nhập, gắn ngày hôm nay
+  const updateManualShip = (text: string) => {
+    setManualShipText(text);
+    try {
+      localStorage.setItem(MANUAL_SHIP_KEY, JSON.stringify({ date: todayStr(), text }));
+    } catch { /* ignore */ }
+  };
+
+  // Set các mã đơn đã nhập tay (đã gửi hàng nhưng phần mềm chưa cập nhật)
+  const manualShippedIds = useMemo(() => {
+    const s = new Set<string>();
+    manualShipText
+      .split(/[\s,;\n\r\t]+/)
+      .map(x => x.trim())
+      .filter(Boolean)
+      .forEach(x => s.add(x));
+    return s;
+  }, [manualShipText]);
+
   // Per-column filters (giống trang Đơn hàng) — dùng shared component
   // Text filter lưu vào 'list' với selected có 1 phần tử
   const [colFilters, setColFilters] = useState<Record<string, ColFilter>>({});
@@ -143,9 +185,12 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       const orderValue = sumPriceQty - (main.shop_voucher || 0);
 
       const st = shortStatus(main.status || '');
-      const hasShipped = !!main.date_ship;
+      // Đã gửi hàng = có ngày gửi HOẶC được nhập tay (phần mềm chưa cập nhật)
+      const manuallyShipped = manualShippedIds.has(String(oid).trim());
+      const hasShipped = !!main.date_ship || manuallyShipped;
       const isCancelled = st.text === 'Đã hủy';
-      const isPendingShip = st.text === 'Chờ giao'; // đơn chưa thực sự giao xong
+      // Đơn nhập tay coi như đã gửi → không còn "Chờ giao"
+      const isPendingShip = st.text === 'Chờ giao' && !manuallyShipped; // đơn chưa thực sự giao xong
 
       const misaRec = misaMap.get(oid);
       const statusRec = statusMap.get(oid);
@@ -229,7 +274,12 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       // Đơn "Chờ giao" (chưa gửi hàng) nhưng ĐÃ XUẤT HĐ → luôn cảnh báo
       // Dùng trạng thái "Chờ giao" (không dựa date_ship) để áp dụng cho cả Shopee lẫn TikTok
       if (isPendingShip && !isCancelled && misaRec && daXuatHD) {
-        warnings.push('Chưa gửi hàng nhưng đã xuất HĐ');
+        if (hdChuaPhatHanh) {
+          // Chờ giao + Đã xuất hóa đơn + Chưa phát hành
+          warnings.push('Chưa gửi hàng, không phát hành hđ');
+        } else {
+          warnings.push('Chưa gửi hàng nhưng đã xuất HĐ');
+        }
       }
 
       // TT phát hành HĐ — cảnh báo các bất thường (KHÔNG cảnh báo "chưa phát hành")
@@ -276,19 +326,7 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       });
     });
     return rows;
-  }, [orders, misaMap, statusMap, externalOrderIds]);
-
-  // Stats
-  const stats = useMemo(() => {
-    const total = rowsWithCalc.length;
-    const issued = rowsWithCalc.filter(r => norm(r.statusFinal.text).includes('đã xuất')).length;
-    const missing = rowsWithCalc.filter(r => {
-      const s = norm(r.statusFinal.text);
-      return s.includes('chưa xuất');
-    }).length;
-    const warnings = rowsWithCalc.filter(r => r.warnings.length > 0).length;
-    return { total, issued, missing, warnings };
-  }, [rowsWithCalc]);
+  }, [orders, misaMap, statusMap, externalOrderIds, manualShippedIds]);
 
   // Unique values cho list filter
   const uniqueValues = useMemo(() => {
@@ -791,38 +829,23 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         }`}>{alert.text}</div>
       )}
 
-      {/* KPI cards / filter pills */}
+      {/* Ô nhập tay: đơn đã gửi hàng nhưng phần mềm chưa cập nhật (nhập hằng ngày, tự xóa sang ngày mới) */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
-        <button
-          onClick={() => { setFilterMode('all'); setPage(1); }}
-          className={`card text-left transition cursor-pointer ${filterMode === 'all' ? 'ring-2 ring-brand-500' : 'hover:bg-gray-50'}`}
-        >
-          <div className="text-xs text-gray-500 uppercase tracking-wider">Tổng đơn</div>
-          <div className="text-2xl font-bold mt-1">{stats.total}</div>
-        </button>
-        <button
-          onClick={() => { setFilterMode('shipped'); setPage(1); }}
-          className={`card text-left transition cursor-pointer ${filterMode === 'shipped' ? 'ring-2 ring-brand-500' : 'hover:bg-gray-50'}`}
-        >
-          <div className="text-xs text-gray-500 uppercase tracking-wider">Đã xuất HĐ</div>
-          <div className="text-2xl font-bold mt-1 text-green-600">{stats.issued}</div>
-        </button>
-        <button
-          onClick={() => { setFilterMode('warning'); setPage(1); }}
-          className={`card text-left transition cursor-pointer ${filterMode === 'warning' ? 'ring-2 ring-brand-500' : 'hover:bg-gray-50'}`}
-        >
-          <div className="text-xs text-gray-500 uppercase tracking-wider">Chưa xuất HĐ</div>
-          <div className="text-2xl font-bold mt-1 text-red-600">{stats.missing}</div>
-        </button>
-        <button
-          onClick={() => { setFilterMode('warning'); setPage(1); }}
-          className={`card text-left transition cursor-pointer ${filterMode === 'warning' ? 'ring-2 ring-brand-500' : 'hover:bg-gray-50'}`}
-        >
-          <div className="text-xs text-gray-500 uppercase tracking-wider flex items-center gap-1">
-            <AlertTriangle size={12} /> Cảnh báo
+        <div className="card text-left">
+          <div className="text-xs text-gray-500 uppercase tracking-wider flex items-center justify-between">
+            <span>Đã gửi hàng (PM chưa cập nhật)</span>
+            {manualShippedIds.size > 0 && (
+              <span className="text-brand-600 font-semibold normal-case">{manualShippedIds.size} đơn</span>
+            )}
           </div>
-          <div className="text-2xl font-bold mt-1 text-yellow-600">{stats.warnings}</div>
-        </button>
+          <textarea
+            className="input mt-2 w-full text-xs font-mono"
+            rows={3}
+            placeholder="Dán mã đơn, cách nhau bởi dấu phẩy, dấu cách hoặc xuống dòng. Nhập mỗi ngày, sang hôm sau tự xóa."
+            value={manualShipText}
+            onChange={e => { updateManualShip(e.target.value); setPage(1); }}
+          />
+        </div>
       </div>
 
       <div className="card !p-0 overflow-x-auto">
