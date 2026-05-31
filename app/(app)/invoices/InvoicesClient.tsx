@@ -474,6 +474,8 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
           continue;
         }
 
+        const c_date = idx('Ngày đơn hàng');
+        const c_misaNo = idx('Số đơn hàng');
         const c_platform = idx('Sàn thương mại điện tử');
         const c_orderId = idx('Số đơn hàng từ hệ thống khác');
         const c_ghi = idx('Tình trạng ghi doanh số');
@@ -624,6 +626,8 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
           continue;
         }
 
+        const c_date = idx('Ngày hóa đơn');
+        const c_no = idx('Số hóa đơn');
         const c_value = idx('Giá trị hóa đơn');
         const c_platform = idx('Sàn thương mại điện tử');
         const c_orderId = idx('Số đơn hàng từ hệ thống khác');
