@@ -463,8 +463,17 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         }
         const headers = (allRows[headerRowIdx] || []).map((h: any) => String(h ?? '').trim());
         const idx = (key: string) => headers.findIndex(h => norm(h) === norm(key));
-        const c_date = idx('Ngày đơn hàng');
-        const c_misaNo = idx('Số đơn hàng');
+
+        // ===== Chặn import nhầm: nút này CHỈ nhận file "Đơn đặt hàng (MISA)" =====
+        // File Đơn đặt hàng có cột "Tình trạng xuất hóa đơn"; file Hóa đơn (Trạng thái HĐ)
+        // có cột "Số hóa đơn" / "TT phát hành hóa đơn". Nếu thấy dấu hiệu file Hóa đơn → từ chối.
+        const looksLikeInvoiceFile = idx('Số hóa đơn') !== -1 || idx('TT phát hành hóa đơn') !== -1;
+        const hasExportStatusCol = idx('Tình trạng xuất hóa đơn') !== -1 || idx('Giá trị đã xuất hóa đơn') !== -1;
+        if (looksLikeInvoiceFile && !hasExportStatusCol) {
+          setAlert({ type: 'error', text: `File "${f.name}" có vẻ là file Hóa đơn (Trạng thái HĐ) — hãy dùng nút "Import file Hoa_don (MISA)". Đã bỏ qua, KHÔNG ghi dữ liệu.` });
+          continue;
+        }
+
         const c_platform = idx('Sàn thương mại điện tử');
         const c_orderId = idx('Số đơn hàng từ hệ thống khác');
         const c_ghi = idx('Tình trạng ghi doanh số');
@@ -604,8 +613,17 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         }
         const headers = (allRows[headerRowIdx] || []).map((h: any) => String(h ?? '').trim());
         const idx = (key: string) => headers.findIndex(h => norm(h) === norm(key));
-        const c_date = idx('Ngày hóa đơn');
-        const c_no = idx('Số hóa đơn');
+
+        // ===== Chặn import nhầm: nút này CHỈ nhận file "Hóa đơn (MISA)" =====
+        // File Hóa đơn có cột "Số hóa đơn" / "TT phát hành hóa đơn"; file Đơn đặt hàng
+        // có cột "Tình trạng xuất hóa đơn". Nếu thấy dấu hiệu file Đơn đặt hàng → từ chối.
+        const hasInvoiceCol = idx('Số hóa đơn') !== -1 || idx('TT phát hành hóa đơn') !== -1 || idx('Giá trị hóa đơn') !== -1;
+        const looksLikeMisaOrderFile = idx('Tình trạng xuất hóa đơn') !== -1 || idx('Giá trị đã xuất hóa đơn') !== -1;
+        if (looksLikeMisaOrderFile && !hasInvoiceCol) {
+          setAlert({ type: 'error', text: `File "${f.name}" có vẻ là file Đơn đặt hàng (MISA) — hãy dùng nút "Import file Don_dat_hang (MISA)". Đã bỏ qua, KHÔNG ghi dữ liệu.` });
+          continue;
+        }
+
         const c_value = idx('Giá trị hóa đơn');
         const c_platform = idx('Sàn thương mại điện tử');
         const c_orderId = idx('Số đơn hàng từ hệ thống khác');
@@ -778,7 +796,7 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       <div className="flex flex-wrap gap-3 mb-4 items-center">
         <input ref={misaFileRef} type="file" accept=".xlsx,.xls,.csv" multiple className="hidden" onChange={handleImportMisa} />
         <button className="btn btn-primary" disabled={importingMisa} onClick={() => misaFileRef.current?.click()}>
-          <Upload size={15} /> {importingMisa ? 'Đang import...' : 'Import file Xuất HĐ (MISA)'}
+          <Upload size={15} /> {importingMisa ? 'Đang import...' : 'Import file Don_dat_hang (MISA)'}
         </button>
 
         <input ref={statusFileRef} type="file" accept=".xlsx,.xls,.csv" multiple className="hidden" onChange={handleImportStatus} />
@@ -788,7 +806,7 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
           disabled={importingStatus}
           onClick={() => statusFileRef.current?.click()}
         >
-          <Upload size={15} /> {importingStatus ? 'Đang import...' : 'Import file Trạng thái HĐ'}
+          <Upload size={15} /> {importingStatus ? 'Đang import...' : 'Import file Hoa_don (MISA)'}
         </button>
 
         <select className="input" value={dateRange} onChange={e => { setDateRange(e.target.value); setPage(1); }}>
