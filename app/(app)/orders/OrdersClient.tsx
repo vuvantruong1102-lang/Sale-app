@@ -416,6 +416,19 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
           continue;
         }
 
+        // ===== Chặn import nhầm vào nút "Import Ví Shopee" =====
+        // File Ví Tiktok có "Tổng số tiền quyết toán"; file đơn hàng có cột sản phẩm "Tên sản phẩm".
+        const c_viTiktok = headers.findIndex(h => norm(h).includes('tổng số tiền quyết toán'));
+        const c_productName = headers.findIndex(h => norm(h) === norm('Tên sản phẩm'));
+        if (c_viTiktok !== -1) {
+          setAlert({ type: 'error', text: `File "${f.name}" có vẻ là file Ví Tiktokshop — hãy dùng nút "Import Ví Tiktokshop". Đã bỏ qua.` });
+          continue;
+        }
+        if (c_productName !== -1) {
+          setAlert({ type: 'error', text: `File "${f.name}" có vẻ là file đơn hàng — hãy dùng nút "Import Shopee Order". Đã bỏ qua.` });
+          continue;
+        }
+
         for (let i = headerRowIdx + 1; i < allRows.length; i++) {
           const row = allRows[i] || [];
           const orderId = String(row[c_orderIdx] ?? '').trim();
@@ -537,6 +550,13 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
 
         if (c_orderId === -1) {
           setAlert({ type: 'error', text: `File "${f.name}" không có cột "Order ID"` });
+          continue;
+        }
+
+        // ===== Chặn import nhầm vào nút "Import TiktokShop Order" =====
+        // File Ví Tiktok có cột "Tổng số tiền quyết toán"; file đơn Shopee dùng "Mã đơn hàng" (đã loại ở trên).
+        if (idx('Tổng số tiền quyết toán') !== -1 || idx('ID đơn hàng/điều chỉnh') !== -1) {
+          setAlert({ type: 'error', text: `File "${f.name}" có vẻ là file Ví Tiktokshop — hãy dùng nút "Import Ví Tiktokshop". Đã bỏ qua.` });
           continue;
         }
 
@@ -742,6 +762,13 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
           continue;
         }
 
+        // ===== Chặn import nhầm vào nút "Import Ví Tiktokshop" =====
+        // File Ví Shopee có cột "Loại giao dịch" + "Số tiền" (không có "Tổng số tiền quyết toán").
+        if (idx('Số tiền') !== -1 && idx('Tổng số tiền quyết toán') === -1) {
+          setAlert({ type: 'error', text: `File "${f.name}" có vẻ là file Ví Shopee — hãy dùng nút "Import Ví Shopee". Đã bỏ qua.` });
+          continue;
+        }
+
         let countRows = 0, countSkipped = 0;
         for (let i = headerRowIdx + 1; i < allRows.length; i++) {
           const row = allRows[i] || [];
@@ -944,6 +971,24 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
           setAlert({ type: 'error', text: `File "${f.name}" không có cột Mã đơn hàng` });
           continue;
         }
+
+        // ===== Chặn import nhầm vào nút "Import Shopee Order" =====
+        // File đơn hàng phải có cột sản phẩm; file Ví (đối soát) chỉ có Mã đơn hàng + Số tiền + Loại giao dịch.
+        const looksLikeViFile = findCol(headers, 'Loại giao dịch') !== null
+          && findCol(headers, 'Số tiền') !== null
+          && !c_name && !c_qty;
+        if (looksLikeViFile) {
+          setAlert({ type: 'error', text: `File "${f.name}" có vẻ là file Ví Shopee — hãy dùng nút "Import Ví Shopee". Đã bỏ qua.` });
+          continue;
+        }
+        // File đơn TikTok dùng header tiếng Anh "Order ID" + "SKU Subtotal..." → không hợp nút Shopee
+        const looksLikeTiktokOrder = findCol(headers, 'SKU Subtotal Before Discount') !== null
+          || (findCol(headers, 'Order ID') !== null && findCol(headers, 'Order Amount') !== null);
+        if (looksLikeTiktokOrder) {
+          setAlert({ type: 'error', text: `File "${f.name}" có vẻ là file đơn TikTokShop — hãy dùng nút "Import TiktokShop Order". Đã bỏ qua.` });
+          continue;
+        }
+
         const fn = f.name.toLowerCase();
         const platform = fn.includes('tiktok') || fn.includes('tts') ? 'tiktok' : 'shopee';
 
