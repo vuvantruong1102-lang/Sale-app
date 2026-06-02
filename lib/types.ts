@@ -65,6 +65,15 @@ export type Ad = {
   revenue?: number;
 };
 
+// Chi phí QC nhập tay theo ngày + sàn (bảng ad_spend)
+export type AdSpend = {
+  id?: number;
+  user_id?: string;
+  date: string;                       // 'YYYY-MM-DD'
+  platform: 'shopee' | 'tiktok';
+  cost?: number;
+};
+
 export type Invoice = {
   id?: number;
   user_id?: string;
