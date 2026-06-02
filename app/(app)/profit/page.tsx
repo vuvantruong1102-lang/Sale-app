@@ -4,18 +4,16 @@ import ProfitClient from './ProfitClient';
 
 export default async function ProfitPage() {
   const supabase = createClient();
-  const [orders, ads, products, settings] = await Promise.all([
+  const [orders, adSpend, products] = await Promise.all([
     fetchAll(supabase as any, 'orders', { orderBy: 'date_order', ascending: false }),
-    supabase.from('ads').select('*'),
+    supabase.from('ad_spend').select('*').order('date', { ascending: false }),
     supabase.from('products').select('*'),
-    supabase.from('settings').select('*').single(),
   ]);
   return (
     <ProfitClient
       orders={orders || []}
-      ads={ads.data || []}
+      adSpend={adSpend.data || []}
       products={products.data || []}
-      revRule={settings.data?.rev_rule || 'shipping'}
     />
   );
 }
