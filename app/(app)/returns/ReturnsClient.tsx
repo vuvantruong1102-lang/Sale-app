@@ -326,7 +326,9 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
         const buf = await f.arrayBuffer();
         const wb = XLSX.read(buf, { type: 'array', cellDates: true });
         const sh = wb.Sheets[wb.SheetNames[0]];
-        const rows: any[][] = XLSX.utils.sheet_to_json(sh, { header: 1, defval: null, raw: true });
+        // raw:false → lấy chuỗi đã format, GIỮ NGUYÊN order_id TikTok dài 18 số
+        // (raw:true sẽ đọc thành number và làm tròn mất 2 số cuối → không khớp đơn)
+        const rows: any[][] = XLSX.utils.sheet_to_json(sh, { header: 1, defval: null, raw: false });
         // tìm dòng header
         let hr = -1;
         for (let i = 0; i < 6; i++) {
@@ -335,11 +337,18 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
         if (hr < 0) continue;
         const headers = (rows[hr] || []).map(h => norm(h));
         const c_oid = headers.findIndex(h => h.includes('số đơn hàng từ hệ thống khác'));
-        const c_invno = headers.findIndex(h => h === 'số hóa đơn');
+        // Cột số hóa đơn: ưu tiên khớp chính xác, fallback chứa "số hóa đơn"
+        // nhưng loại trừ "phương thức lập hóa đơn"
+        let c_invno = headers.findIndex(h => h === 'số hóa đơn');
+        if (c_invno < 0) {
+          c_invno = headers.findIndex(h => h.includes('số hóa đơn') && !h.includes('phương thức'));
+        }
         if (c_oid < 0 || c_invno < 0) continue;
         for (let i = hr + 1; i < rows.length; i++) {
-          const oid = String(rows[i]?.[c_oid] ?? '').trim();
-          const invNo = String(rows[i]?.[c_invno] ?? '').trim();
+          // Bỏ ký tự khoảng trắng ẩn, giữ nguyên chuỗi; chống số khoa học (vd 5.84e17)
+          let oid = String(rows[i]?.[c_oid] ?? '').replace(/\s/g, '').trim();
+          if (/e\+?\d+$/i.test(oid)) oid = Number(oid).toLocaleString('fullwide', { useGrouping: false });
+          const invNo = String(rows[i]?.[c_invno] ?? '').replace(/\s/g, '').trim();
           if (!oid || !invNo) continue;
           adjByOid.set(oid, invNo);
         }
@@ -350,6 +359,14 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
         setImporting(false);
         return;
       }
+
+      // Cảnh báo: đơn có trong file nhưng KHÔNG có trong bảng đơn hàng
+      // (thường do chưa import đơn hàng đó, hoặc order_id lệch)
+      const knownOids = new Set(orders.map(o => String(o.order_id).trim()));
+      const unmatched: string[] = [];
+      adjByOid.forEach((_invNo, oid) => {
+        if (!knownOids.has(oid)) unmatched.push(oid);
+      });
 
       // Số HĐ điều chỉnh chỉ đến từ file → luôn cập nhật theo file mới nhất
       const toUpsert: any[] = [];
@@ -376,7 +393,12 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
       // Tải lại invoice_status
       const { data: fresh } = await supabase.from('invoice_status').select('*');
       setInvStatus((fresh as InvStatus[]) || []);
-      setAlert({ type: 'ok', text: `Đã điền số HĐ điều chỉnh cho ${toUpsert.length} đơn.` });
+      let msg = `Đã điền số HĐ điều chỉnh cho ${toUpsert.length} đơn.`;
+      if (unmatched.length > 0) {
+        const sample = unmatched.slice(0, 5).join(', ');
+        msg += ` ⚠ ${unmatched.length} đơn trong file chưa có trong bảng đơn hàng (chưa import đơn?): ${sample}${unmatched.length > 5 ? '…' : ''}`;
+      }
+      setAlert({ type: 'ok', text: msg });
       router.refresh();
     } catch (err: any) {
       setAlert({ type: 'err', text: `Lỗi import: ${err?.message || 'không xác định'}` });
