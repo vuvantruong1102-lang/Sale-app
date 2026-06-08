@@ -547,6 +547,8 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         const c_packageId  = idx('Package ID');                     // AY
         const c_tracking   = idx('Tracking ID');                    // AI
         const c_carrier    = idx('Shipping Provider Name');         // AK
+        const c_cancelReason = idx('Cancel Reason');                // lý do hủy (TikTok)
+        const c_returnedQty  = idx('Sku Quantity of return');       // SL hoàn
 
         if (c_orderId === -1) {
           setAlert({ type: 'error', text: `File "${f.name}" không có cột "Order ID"` });
@@ -620,6 +622,8 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
             date_order: c_dateOrder >= 0 ? toIso(r[c_dateOrder]) : null,
             date_ship: c_dateShip >= 0 ? toIso(r[c_dateShip]) : null,
             date_complete: c_dateDelivered >= 0 ? toIso(r[c_dateDelivered]) : null,
+            cancel_reason: c_cancelReason >= 0 ? String(r[c_cancelReason] ?? '').trim() : '',
+            returned_qty: c_returnedQty >= 0 ? +(r[c_returnedQty] || 0) : 0,
           });
           total++;
         }
