@@ -126,7 +126,8 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
       const refundStatus = (main.refund_status || '').trim();
       const cancelReason = (main.cancel_reason || '').trim();
       const isTHHT = !!refundStatus;
-      const isFailedDelivery = !isTHHT && /giao hàng thất bại/i.test(cancelReason);
+      // Bắt cả "Giao hàng thất bại" (Shopee) lẫn "Giao gói hàng thất bại" (TikTok)
+      const isFailedDelivery = !isTHHT && /giao\s+(gói\s+)?hàng\s+thất\s+bại/i.test(cancelReason);
       const st = shortStatus(main.status || '');
       const payout = payoutMap.get(oid) ?? null;
       const isTHHTTiktok = main.platform === 'tiktok'
