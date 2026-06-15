@@ -95,6 +95,10 @@ export const inRange = (d: any, range: string, from?: string, to?: string): bool
 export const norm = (s: any): string =>
   String(s ?? '').normalize('NFC').toLowerCase().trim();
 
+// Chuẩn hóa order_id để so khớp/đánh key NHẤT QUÁN ở mọi nơi (map, upsert, lookup).
+// Bỏ mọi khoảng trắng (kể cả ký tự ẩn) — tránh tạo bản ghi trùng lệch nhau giữa các luồng import.
+export const oidKey = (s: any): string => String(s ?? '').replace(/\s/g, '').trim();
+
 // Tìm cột linh hoạt theo nhiều tên khả năng (xử lý Unicode NFD từ Shopee)
 export function findCol(headers: string[], ...keys: string[]): string | null {
   // Exact match trước (đã normalize NFC)
