@@ -3,7 +3,7 @@
 import { useState, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
-import { fmt, fmtDate, norm, shortStatus, tagClass, parseDate } from '@/lib/utils';
+import { fmt, fmtDate, norm, shortStatus, tagClass, parseDate, oidKey } from '@/lib/utils';
 import { Order, Return } from '@/lib/types';
 import { Download, Search, Check, Upload, AlertTriangle } from 'lucide-react';
 import * as XLSX from 'xlsx';
@@ -96,7 +96,22 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
 
   const invStatusMap = useMemo(() => {
     const m = new Map<string, InvStatus>();
-    invStatus.forEach(r => m.set(r.order_id, r));
+    invStatus.forEach(r => {
+      const k = oidKey(r.order_id);
+      const ex = m.get(k);
+      // Nếu trùng order_id: gộp, ưu tiên giữ số HĐ điều chỉnh và số HĐ đã có
+      if (ex) {
+        m.set(k, {
+          ...ex,
+          ...r,
+          adjustment_invoice_no: r.adjustment_invoice_no || ex.adjustment_invoice_no,
+          invoice_no: r.invoice_no || ex.invoice_no,
+          invoice_value: r.invoice_value ?? ex.invoice_value,
+        } as InvStatus);
+      } else {
+        m.set(k, r);
+      }
+    });
     return m;
   }, [invStatus]);
 
@@ -137,7 +152,7 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
       if (!isTHHT && !isFailedDelivery && !isTHHTTiktok) continue;
 
       const r = returnMap.get(oid);
-      const inv = invStatusMap.get(oid);
+      const inv = invStatusMap.get(oidKey(oid));
       const invoiceValue = inv?.invoice_value ?? null;
 
       // Sort lines: dòng có giá > 0 lên trước, dòng 0đ (quà tặng) xuống cuối
@@ -361,12 +376,19 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
         return;
       }
 
-      // Cảnh báo: đơn có trong file nhưng KHÔNG có trong bảng đơn hàng
-      // (thường do chưa import đơn hàng đó, hoặc order_id lệch)
-      const knownOids = new Set(orders.map(o => String(o.order_id).trim()));
-      const unmatched: string[] = [];
+      // Chuẩn hóa order_id giống hệt lúc đọc file (bỏ mọi whitespace) để so khớp nhất quán
+      const normOid = (s: any) => String(s ?? '').replace(/\s/g, '').trim();
+      const knownOids = new Set(orders.map(o => normOid(o.order_id)));
+      // Bản ghi đã có số ĐC trước đó (để biết đơn nào được điền MỚI)
+      const hadAdj = new Set(
+        invStatus.filter(s => (s.adjustment_invoice_no || '').trim()).map(s => normOid(s.order_id))
+      );
+
+      const unmatched: string[] = []; // có trong file, không có trong bảng đơn hàng
+      const newlyFilled: string[] = []; // khớp đơn & trước đó chưa có số ĐC
       adjByOid.forEach((_invNo, oid) => {
         if (!knownOids.has(oid)) unmatched.push(oid);
+        else if (!hadAdj.has(oid)) newlyFilled.push(oid);
       });
 
       // Số HĐ điều chỉnh chỉ đến từ file → luôn cập nhật theo file mới nhất
@@ -394,10 +416,10 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
       // Tải lại invoice_status
       const { data: fresh } = await supabase.from('invoice_status').select('*');
       setInvStatus((fresh as InvStatus[]) || []);
-      let msg = `Đã điền số HĐ điều chỉnh cho ${toUpsert.length} đơn.`;
+      let msg = `Đã xử lý ${toUpsert.length} đơn từ file (${newlyFilled.length} đơn được điền số HĐ mới).`;
       if (unmatched.length > 0) {
         const sample = unmatched.slice(0, 5).join(', ');
-        msg += ` ⚠ ${unmatched.length} đơn trong file chưa có trong bảng đơn hàng (chưa import đơn?): ${sample}${unmatched.length > 5 ? '…' : ''}`;
+        msg += ` ⚠ ${unmatched.length} đơn trong file chưa có trong bảng đơn hàng (cần import đơn trước): ${sample}${unmatched.length > 5 ? '…' : ''}`;
       }
       setAlert({ type: 'ok', text: msg });
       router.refresh();
