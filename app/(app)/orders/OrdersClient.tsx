@@ -393,6 +393,7 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         const sh = wb.Sheets[wb.SheetNames[0]];
         // raw:true → ô ngày là Date object thật, tránh lỗi đảo ngày/tháng + mất giờ
         const allRows: any[][] = XLSX.utils.sheet_to_json(sh, { header: 1, defval: null, raw: true });
+        const allRowsText: any[][] = XLSX.utils.sheet_to_json(sh, { header: 1, defval: null, raw: false });
         let headerRowIdx = -1;
         for (let i = 0; i < Math.min(30, allRows.length); i++) {
           const row = allRows[i] || [];
@@ -431,7 +432,7 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
 
         for (let i = headerRowIdx + 1; i < allRows.length; i++) {
           const row = allRows[i] || [];
-          const orderId = String(row[c_orderIdx] ?? '').trim();
+          const orderId = String((allRowsText[i] || [])[c_orderIdx] ?? row[c_orderIdx] ?? '').replace(/\s/g, '').trim();
           if (!orderId || orderId === '-') continue;
 
           const amount = +(row[c_amountIdx] || 0);
@@ -524,6 +525,9 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         const wb = XLSX.read(data, { type: 'array', cellDates: true });
         const sh = wb.Sheets[wb.SheetNames[0]];
         const rows: any[][] = XLSX.utils.sheet_to_json(sh, { header: 1, defval: null, raw: true });
+        // Bản đọc text song song: order_id TikTok dài 18 số nếu đọc raw:true sẽ bị
+        // làm tròn (mất 2 số cuối). Lấy order_id từ bản raw:false để giữ chính xác.
+        const rowsText: any[][] = XLSX.utils.sheet_to_json(sh, { header: 1, defval: null, raw: false });
         if (rows.length < 3) continue;
 
         // Row 0 = header, Row 1 = mô tả (skip), Row 2+ = data
@@ -581,11 +585,12 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         // Bắt đầu từ row 2 (skip header + description row)
         for (let i = 2; i < rows.length; i++) {
           const r = rows[i] || [];
-          const id = String(r[c_orderId] ?? '').trim();
+          // order_id lấy từ bản text (raw:false) để không mất chính xác số dài
+          const id = String((rowsText[i] || [])[c_orderId] ?? r[c_orderId] ?? '').replace(/\s/g, '').trim();
           if (!id) continue;
           // Bỏ qua dòng mô tả/placeholder của file mẫu (vd "Platform unique order ID.")
           // Mã đơn thật không chứa dấu cách hay dấu chấm
-          if (/[\s.]/.test(id) || /order id|unique|sku id|product name/i.test(id)) continue;
+          if (/[.]/.test(id) || /order id|unique|sku id|product name/i.test(id)) continue;
           const skuVar = String((c_sku >= 0 && r[c_sku]) ?? '').trim() || 'NOSKU';
           const unique_key = id + '__' + skuVar;
 
@@ -736,6 +741,7 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         }
         const sh = wb.Sheets[sheetName];
         const allRows: any[][] = XLSX.utils.sheet_to_json(sh, { header: 1, defval: null, raw: true });
+        const allRowsText: any[][] = XLSX.utils.sheet_to_json(sh, { header: 1, defval: null, raw: false });
         if (allRows.length < 2) continue;
 
         // Row 0 = header (file này không có meta phía trên)
@@ -776,7 +782,7 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         let countRows = 0, countSkipped = 0;
         for (let i = headerRowIdx + 1; i < allRows.length; i++) {
           const row = allRows[i] || [];
-          const orderId = String(row[c_orderId] ?? '').trim();
+          const orderId = String((allRowsText[i] || [])[c_orderId] ?? row[c_orderId] ?? '').replace(/\s/g, '').trim();
           if (!orderId) { countSkipped++; continue; }
 
           // Parse payout: trong file mới có giá trị âm như "-14507060" hoặc null
@@ -942,6 +948,8 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
         // raw:true → giữ nguyên Date object cho ô ngày & số cho ô số.
         // (raw:false sẽ format ô ngày thành chuỗi kiểu Mỹ "M/D/YY" và mất giờ → parseDate đảo ngày/tháng + 00:00)
         const rows: any[] = XLSX.utils.sheet_to_json(sh, { defval: null, raw: true });
+        // Bản text song song để lấy order_id chính xác (phòng mã đơn toàn số bị làm tròn)
+        const rowsText: any[] = XLSX.utils.sheet_to_json(sh, { defval: null, raw: false });
         if (!rows.length) continue;
         const headers = Object.keys(rows[0]);
 
@@ -1001,11 +1009,13 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
           return d ? d.toISOString() : null;
         };
 
-        for (const r of rows) {
-          const id = String(r[c_id!] ?? '').trim();
+        for (let ri = 0; ri < rows.length; ri++) {
+          const r = rows[ri];
+          const idText = c_id ? (rowsText[ri]?.[c_id] ?? r[c_id!]) : r[c_id!];
+          const id = String(idText ?? '').replace(/\s/g, '').trim();
           if (!id) continue;
           // Bỏ qua dòng mô tả/placeholder của file mẫu (vd "Platform unique order ID.")
-          if (/[\s.]/.test(id) || /order id|unique|sku id|product name/i.test(id)) continue;
+          if (/[.]/.test(id) || /order id|unique|sku id|product name/i.test(id)) continue;
           const skuVar = String((c_sku && r[c_sku]) ?? '').trim() || 'NOSKU';
           const unique_key = id + '__' + skuVar;
           allRows.push({
