@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import { Order } from '@/lib/types';
 import { createClient } from '@/lib/supabase/client';
-import { fmt, fmtDate, norm, shortStatus, tagClass, parseDate, inRange } from '@/lib/utils';
+import { fmt, fmtDate, norm, shortStatus, tagClass, parseDate, inRange, oidKey } from '@/lib/utils';
 import { useResizableCols, ResizeHandle, ColDef } from '@/lib/useResizableCols';
 import { fetchAll } from '@/lib/fetchAll';
 import { ColHeader, ColFilter } from '@/components/ColHeader';
@@ -35,6 +35,7 @@ type InvStatus = {
   release_status?: string;         // TT phát hành HĐ (cột K)
   cqt_status?: string;             // TT gửi CQT (cột M)
   invoice_type?: string;
+  adjustment_invoice_no?: string;  // Số HĐ điều chỉnh (nhập ở trang Đơn hủy/Trả hàng)
 };
 
 const DEFAULT_COLS: ColDef[] = [
@@ -135,13 +136,27 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
   // Map order_id -> misa & invoice status
   const misaMap = useMemo(() => {
     const m = new Map<string, MisaOrder>();
-    misa.forEach(r => m.set(r.order_id, r));
+    misa.forEach(r => m.set(oidKey(r.order_id), r));
     return m;
   }, [misa]);
 
   const statusMap = useMemo(() => {
     const m = new Map<string, InvStatus>();
-    invStatus.forEach(r => m.set(r.order_id, r));
+    invStatus.forEach(r => {
+      const k = oidKey(r.order_id);
+      const ex = m.get(k);
+      if (ex) {
+        m.set(k, {
+          ...ex,
+          ...r,
+          adjustment_invoice_no: r.adjustment_invoice_no || ex.adjustment_invoice_no,
+          invoice_no: r.invoice_no || ex.invoice_no,
+          invoice_value: r.invoice_value ?? ex.invoice_value,
+        } as InvStatus);
+      } else {
+        m.set(k, r);
+      }
+    });
     return m;
   }, [invStatus]);
 
@@ -192,8 +207,8 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       // Đơn nhập tay coi như đã gửi → không còn "Chờ giao"
       const isPendingShip = st.text === 'Chờ giao' && !manuallyShipped; // đơn chưa thực sự giao xong
 
-      const misaRec = misaMap.get(oid);
-      const statusRec = statusMap.get(oid);
+      const misaRec = misaMap.get(oidKey(oid));
+      const statusRec = statusMap.get(oidKey(oid));
 
       // Giá trị xuất HĐ = cột D "Giá trị hóa đơn" trong file Hoa_don (invoice_status)
       // Fallback: file MISA (misa_orders.invoice_export_value)
@@ -439,7 +454,7 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Chưa đăng nhập');
 
-      const payload: any[] = [];
+      let payload: any[] = [];
       const toIso = (v: any) => { const d = parseDate(v); return d ? d.toISOString() : null; };
 
       for (const f of files) {
@@ -491,7 +506,7 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
 
         for (let i = headerRowIdx + 1; i < allRows.length; i++) {
           const row = allRows[i] || [];
-          const orderId = String(row[c_orderId] ?? '').trim();
+          const orderId = String(row[c_orderId] ?? '').replace(/\s/g, '').trim();
           if (!orderId) continue;
           payload.push({
             user_id: user.id,
@@ -513,7 +528,23 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         return;
       }
 
-      // Debug: kiểm tra cột invoice_export_value có giá trị thật không
+      // DEDUPE theo order_id: 1 đơn nhiều dòng SKU trong file MISA → gộp về 1 bản ghi.
+      // Tránh lỗi Postgres "ON CONFLICT DO UPDATE cannot affect row a second time".
+      // Cộng dồn giá trị; các field mô tả giữ theo dòng đầu (bổ sung nếu dòng đầu trống).
+      const misaDedup = new Map<string, any>();
+      for (const p of payload) {
+        const ex = misaDedup.get(p.order_id);
+        if (!ex) { misaDedup.set(p.order_id, { ...p }); continue; }
+        ex.order_value += p.order_value || 0;
+        ex.invoice_export_value += p.invoice_export_value || 0;
+        ex.misa_order_no = ex.misa_order_no || p.misa_order_no;
+        ex.misa_date = ex.misa_date || p.misa_date;
+        ex.platform = ex.platform || p.platform;
+        ex.customer = ex.customer || p.customer;
+        ex.export_status = ex.export_status || p.export_status;
+        ex.ghi_doanh_so = ex.ghi_doanh_so || p.ghi_doanh_so;
+      }
+      payload = Array.from(misaDedup.values());
       const withExport = payload.filter(p => p.invoice_export_value > 0).length;
       const withStatus = payload.filter(p => p.export_status).length;
 
@@ -591,7 +622,7 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Chưa đăng nhập');
 
-      const payload: any[] = [];
+      let payload: any[] = [];
       const toIso = (v: any) => { const d = parseDate(v); return d ? d.toISOString() : null; };
 
       for (const f of files) {
@@ -643,7 +674,7 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
 
         for (let i = headerRowIdx + 1; i < allRows.length; i++) {
           const row = allRows[i] || [];
-          const orderId = String(row[c_orderId] ?? '').trim();
+          const orderId = String(row[c_orderId] ?? '').replace(/\s/g, '').trim();
           if (!orderId) continue;
           // Parse số có dấu phẩy + space, vd "349,000 " → 349000
           const parseNum = (v: any): number => {
@@ -672,6 +703,23 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         return;
       }
 
+      // DEDUPE theo order_id: tránh lỗi Postgres khi 1 đơn có nhiều dòng HĐ trong file.
+      // Cộng dồn giá trị HĐ; các field khác giữ theo dòng cuối (HĐ mới nhất trong file).
+      const stDedup = new Map<string, any>();
+      for (const p of payload) {
+        const ex = stDedup.get(p.order_id);
+        if (!ex) { stDedup.set(p.order_id, { ...p }); continue; }
+        ex.invoice_value += p.invoice_value || 0;
+        ex.invoice_no = p.invoice_no || ex.invoice_no;
+        ex.invoice_date = p.invoice_date || ex.invoice_date;
+        ex.platform = p.platform || ex.platform;
+        ex.invoice_type = p.invoice_type || ex.invoice_type;
+        ex.invoice_status = p.invoice_status || ex.invoice_status;
+        ex.release_status = p.release_status || ex.release_status;
+        ex.cqt_status = p.cqt_status || ex.cqt_status;
+      }
+      payload = Array.from(stDedup.values());
+
       const withRelease = payload.filter(p => p.release_status).length;
 
       // ===== Thay thế theo khoảng thời gian của file mới (giống import MISA) =====
@@ -691,15 +739,15 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         .not('adjustment_invoice_no', 'is', null);
       const adjMap = new Map<string, string>();
       (keepRows || []).forEach((r: any) => {
-        if (r.adjustment_invoice_no) adjMap.set(String(r.order_id).trim(), r.adjustment_invoice_no);
+        if (r.adjustment_invoice_no) adjMap.set(String(r.order_id).replace(/\s/g, '').trim(), r.adjustment_invoice_no);
       });
       // Gộp số HĐ điều chỉnh đã lưu vào payload (theo order_id)
       payload.forEach(p => {
-        const adj = adjMap.get(String(p.order_id).trim());
+        const adj = adjMap.get(String(p.order_id).replace(/\s/g, '').trim());
         if (adj) p.adjustment_invoice_no = adj;
       });
       // Đơn có số ĐC nhưng KHÔNG nằm trong file mới → vẫn cần khôi phục riêng sau upsert
-      const payloadIds = new Set(payload.map(p => String(p.order_id).trim()));
+      const payloadIds = new Set(payload.map(p => String(p.order_id).replace(/\s/g, '').trim()));
       const orphanAdj = Array.from(adjMap.entries())
         .filter(([oid]) => !payloadIds.has(oid))
         .map(([order_id, adjustment_invoice_no]) => ({ user_id: user.id, order_id, adjustment_invoice_no }));
