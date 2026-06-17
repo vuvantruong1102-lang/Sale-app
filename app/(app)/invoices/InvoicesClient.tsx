@@ -83,47 +83,91 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
   const misaFileRef = useRef<HTMLInputElement>(null);
   const statusFileRef = useRef<HTMLInputElement>(null);
 
-  // ===== Đơn đã gửi hàng nhưng phần mềm chưa cập nhật (nhập tay hằng ngày) =====
-  // Lưu localStorage kèm ngày. Sang ngày mới, danh sách cũ tự động bị xóa.
-  const MANUAL_SHIP_KEY = 'invoices-manual-shipped';
-  const todayStr = () => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  };
+  // ===== Đơn đã gửi hàng nhưng phần mềm chưa cập nhật (nhập tay) =====
+  // Lưu trên DATABASE (bảng manual_shipped) để đồng bộ mọi thiết bị.
+  // Đơn nào phần mềm sàn đã cập nhật ngày gửi sẽ tự được dọn khỏi danh sách.
   const [manualShipText, setManualShipText] = useState('');
+  const [manualShipLoaded, setManualShipLoaded] = useState(false);
 
-  // Nạp danh sách đã lưu khi mở trang; nếu khác ngày hôm nay thì xóa
+  // Chuyển text ô nhập -> mảng mã đơn (đã chuẩn hóa, loại trùng)
+  const parseManualTokens = (text: string): string[] => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    text.split(/[\s,;\n\r\t]+/).map(x => x.trim()).filter(Boolean).forEach(x => {
+      const k = oidKey(x);
+      if (k && !seen.has(k)) { seen.add(k); out.push(x.replace(/\s/g, '')); }
+    });
+    return out;
+  };
+
+  // Nạp danh sách từ DB khi mở trang
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(MANUAL_SHIP_KEY);
-      if (!raw) return;
-      const saved = JSON.parse(raw) as { date: string; text: string };
-      if (saved.date === todayStr()) {
-        setManualShipText(saved.text || '');
-      } else {
-        localStorage.removeItem(MANUAL_SHIP_KEY);
-      }
-    } catch { /* ignore */ }
+    (async () => {
+      try {
+        const { data } = await supabase
+          .from('manual_shipped')
+          .select('order_ids')
+          .maybeSingle();
+        const ids: string[] = (data?.order_ids as string[]) || [];
+        setManualShipText(ids.join('\n'));
+      } catch { /* ignore */ }
+      finally { setManualShipLoaded(true); }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Lưu lại mỗi khi người dùng nhập, gắn ngày hôm nay
-  const updateManualShip = (text: string) => {
-    setManualShipText(text);
+  // Ghi danh sách lên DB (debounce nhẹ để tránh ghi mỗi ký tự)
+  const saveManualToDb = async (text: string) => {
     try {
-      localStorage.setItem(MANUAL_SHIP_KEY, JSON.stringify({ date: todayStr(), text }));
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const ids = parseManualTokens(text);
+      await supabase
+        .from('manual_shipped')
+        .upsert(
+          { user_id: user.id, order_ids: ids, updated_at: new Date().toISOString() },
+          { onConflict: 'user_id' }
+        );
     } catch { /* ignore */ }
   };
 
-  // Set các mã đơn đã nhập tay (đã gửi hàng nhưng phần mềm chưa cập nhật)
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const updateManualShip = (text: string) => {
+    setManualShipText(text);
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => saveManualToDb(text), 600);
+  };
+
+  // Set các mã đơn đã nhập tay (chuẩn hóa bằng oidKey để khớp nhất quán toàn app)
   const manualShippedIds = useMemo(() => {
     const s = new Set<string>();
     manualShipText
       .split(/[\s,;\n\r\t]+/)
-      .map(x => x.trim())
+      .map(x => oidKey(x))
       .filter(Boolean)
       .forEach(x => s.add(x));
     return s;
   }, [manualShipText]);
+
+  // Tự dọn: đơn nào phần mềm sàn ĐÃ cập nhật ngày gửi (date_ship) thì bỏ khỏi danh sách.
+  const shippedKeySet = useMemo(() => {
+    const s = new Set<string>();
+    orders.forEach(o => { if (o.date_ship) s.add(oidKey(o.order_id)); });
+    return s;
+  }, [orders]);
+
+  useEffect(() => {
+    if (!manualShipLoaded) return;            // chờ nạp xong mới dọn, tránh ghi đè rỗng
+    if (!manualShipText.trim() || shippedKeySet.size === 0) return;
+    const tokens = manualShipText.split(/[\s,;\n\r\t]+/).map(x => x.trim()).filter(Boolean);
+    const kept = tokens.filter(t => !shippedKeySet.has(oidKey(t)));
+    if (kept.length !== tokens.length) {
+      const newText = kept.join('\n');
+      setManualShipText(newText);
+      saveManualToDb(newText);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shippedKeySet, manualShipLoaded]);
 
   // Per-column filters (giống trang Đơn hàng) — dùng shared component
   // Text filter lưu vào 'list' với selected có 1 phần tử
@@ -201,7 +245,7 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
 
       const st = shortStatus(main.status || '');
       // Đã gửi hàng = có ngày gửi HOẶC được nhập tay (phần mềm chưa cập nhật)
-      const manuallyShipped = manualShippedIds.has(String(oid).trim());
+      const manuallyShipped = manualShippedIds.has(oidKey(oid));
       const hasShipped = !!main.date_ship || manuallyShipped;
       const isCancelled = st.text === 'Đã hủy';
       // Đơn nhập tay coi như đã gửi → không còn "Chờ giao"
@@ -911,9 +955,10 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
           <textarea
             className="input mt-2 w-full text-xs font-mono"
             rows={3}
-            placeholder="Dán mã đơn, cách nhau bởi dấu phẩy, dấu cách hoặc xuống dòng. Nhập mỗi ngày, sang hôm sau tự xóa."
+            placeholder="Dán mã đơn, cách nhau bởi dấu phẩy, dấu cách hoặc xuống dòng. Lưu trên tài khoản (đồng bộ mọi thiết bị). Đơn nào phần mềm sàn đã cập nhật ngày gửi sẽ tự được bỏ khỏi danh sách."
             value={manualShipText}
             onChange={e => { updateManualShip(e.target.value); setPage(1); }}
+            onBlur={e => { if (saveTimer.current) clearTimeout(saveTimer.current); saveManualToDb(e.target.value); }}
           />
         </div>
       </div>
