@@ -87,7 +87,6 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
   // Lưu trên DATABASE (bảng manual_shipped) để đồng bộ mọi thiết bị.
   // Đơn nào phần mềm sàn đã cập nhật ngày gửi sẽ tự được dọn khỏi danh sách.
   const [manualShipText, setManualShipText] = useState('');
-  const [manualShipLoaded, setManualShipLoaded] = useState(false);
 
   // Chuyển text ô nhập -> mảng mã đơn (đã chuẩn hóa, loại trùng)
   const parseManualTokens = (text: string): string[] => {
@@ -111,7 +110,6 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         const ids: string[] = (data?.order_ids as string[]) || [];
         setManualShipText(ids.join('\n'));
       } catch { /* ignore */ }
-      finally { setManualShipLoaded(true); }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -149,25 +147,10 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
     return s;
   }, [manualShipText]);
 
-  // Tự dọn: đơn nào phần mềm sàn ĐÃ cập nhật ngày gửi (date_ship) thì bỏ khỏi danh sách.
-  const shippedKeySet = useMemo(() => {
-    const s = new Set<string>();
-    orders.forEach(o => { if (o.date_ship) s.add(oidKey(o.order_id)); });
-    return s;
-  }, [orders]);
-
-  useEffect(() => {
-    if (!manualShipLoaded) return;            // chờ nạp xong mới dọn, tránh ghi đè rỗng
-    if (!manualShipText.trim() || shippedKeySet.size === 0) return;
-    const tokens = manualShipText.split(/[\s,;\n\r\t]+/).map(x => x.trim()).filter(Boolean);
-    const kept = tokens.filter(t => !shippedKeySet.has(oidKey(t)));
-    if (kept.length !== tokens.length) {
-      const newText = kept.join('\n');
-      setManualShipText(newText);
-      saveManualToDb(newText);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shippedKeySet, manualShipLoaded]);
+  // Lưu ý: KHÔNG tự xóa mã đơn khỏi danh sách dựa trên date_ship của orders.
+  // Trước đây cơ chế "tự dọn" chạy mỗi lần mở trang và có thể xóa nhầm mã đơn
+  // (đặc biệt khi dữ liệu orders đã có date_ship vì lý do khác) → mã biến mất sau reload.
+  // Danh sách giờ chỉ thay đổi khi người dùng tự sửa ô nhập.
 
   // Per-column filters (giống trang Đơn hàng) — dùng shared component
   // Text filter lưu vào 'list' với selected có 1 phần tử
