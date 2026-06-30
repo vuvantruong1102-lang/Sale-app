@@ -363,7 +363,8 @@ export default function ReturnsClient({ initialOrders, initialReturns, reconcili
         for (let i = hr + 1; i < rows.length; i++) {
           // Bỏ ký tự khoảng trắng ẩn, giữ nguyên chuỗi; chống số khoa học (vd 5.84e17)
           let oid = String(rows[i]?.[c_oid] ?? '').replace(/\s/g, '').trim();
-          if (/e\+?\d+$/i.test(oid)) oid = Number(oid).toLocaleString('fullwide', { useGrouping: false });
+          // Chỉ sửa số khoa học thực sự (vd 5.84e17 — toàn số), KHÔNG đụng mã Shopee chữ-số (vd 260620JP1AKME9)
+          if (/^\d+(\.\d+)?e\+?\d+$/i.test(oid)) oid = Number(oid).toLocaleString('fullwide', { useGrouping: false });
           const invNo = String(rows[i]?.[c_invno] ?? '').replace(/\s/g, '').trim();
           if (!oid || !invNo) continue;
           adjByOid.set(oid, invNo);
