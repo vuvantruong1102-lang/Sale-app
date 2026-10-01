@@ -1,20 +1,30 @@
-import { createClient } from '@/lib/supabase/server';
+'use client';
+
+import { useInvoicesData } from '@/lib/queries';
 import InvoicesClient from './InvoicesClient';
 
-export default async function InvoicesPage() {
-  const supabase = createClient();
-  const [orders, misa, invStatus, extInv] = await Promise.all([
-    supabase.from('orders').select('*').order('date_order', { ascending: false }).limit(20000),
-    supabase.from('misa_orders').select('*'),
-    supabase.from('invoice_status').select('*'),
-    supabase.from('external_invoices').select('order_id'),
-  ]);
+export default function InvoicesPage() {
+  const { data, isLoading, isError, error } = useInvoicesData();
+
+  if (isLoading) {
+    return (
+      <div className="p-6 text-sm text-gray-500">Đang tải dữ liệu hóa đơn…</div>
+    );
+  }
+  if (isError) {
+    return (
+      <div className="p-6 text-sm text-red-600">
+        Lỗi tải dữ liệu: {(error as Error)?.message || 'không rõ'}
+      </div>
+    );
+  }
+
   return (
     <InvoicesClient
-      initialOrders={orders.data || []}
-      initialMisa={misa.data || []}
-      initialInvStatus={invStatus.data || []}
-      initialExternal={extInv.data || []}
+      initialOrders={data!.orders}
+      initialMisa={data!.misa}
+      initialInvStatus={data!.invStatus}
+      initialExternal={data!.external}
     />
   );
 }
