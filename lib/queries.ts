@@ -53,6 +53,35 @@ export function useOrdersData(fullHistory = false) {
   });
 }
 
+// ---------- DASHBOARD panel ----------
+export function useDashboardData(fullHistory = false) {
+  const since = fullHistory ? undefined : daysAgoISO(DEFAULT_WINDOW_DAYS);
+
+  return useQuery({
+    queryKey: ['dashboard-panel', fullHistory ? 'all' : '60d'],
+    queryFn: async () => {
+      const supabase = createClient();
+      const [orders, adsRes, productsRes, settingsRes] = await Promise.all([
+        fetchAll(supabase as any, 'orders', {
+          orderBy: 'date_order',
+          ascending: false,
+          sinceColumn: since ? 'date_order' : undefined,
+          sinceDate: since,
+        }),
+        supabase.from('ads').select('*'),
+        supabase.from('products').select('*'),
+        supabase.from('settings').select('*').single(),
+      ]);
+      return {
+        orders: orders || [],
+        ads: adsRes.data || [],
+        products: productsRes.data || [],
+        revRule: settingsRes.data?.rev_rule || 'shipping',
+      };
+    },
+  });
+}
+
 // ---------- INVOICES panel ----------
 export function useInvoicesData(fullHistory = false) {
   const since = fullHistory ? undefined : daysAgoISO(DEFAULT_WINDOW_DAYS);
