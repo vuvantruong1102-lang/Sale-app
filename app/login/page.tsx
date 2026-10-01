@@ -26,11 +26,12 @@ export default function LoginPage() {
         password,
       });
       if (error) throw error;
+      // Vào thẳng dashboard. Không gọi router.refresh() ở đây để tránh
+      // phải chờ server render lại trước khi chuyển trang — dashboard tự
+      // tải dữ liệu phía client và hiện spinner trong lúc tải.
       router.push('/dashboard');
-      router.refresh();
     } catch (err: any) {
       setError(err.message || 'Có lỗi xảy ra');
-    } finally {
       setLoading(false);
     }
   };
