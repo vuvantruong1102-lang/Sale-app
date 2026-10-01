@@ -14,8 +14,10 @@ import { fetchAll } from '@/lib/fetchAll';
 // chỉ cần gọi với fullHistory=true là tải đủ tất cả.
 // ============================================================
 
-// Số ngày hiển thị mặc định. Đổi số này nếu muốn 60/120 ngày...
-export const DEFAULT_WINDOW_DAYS = 60;
+// Số ngày hiển thị mặc định cho từng panel. Đổi số ở đây nếu cần.
+export const DASHBOARD_WINDOW_DAYS = 30;
+export const ORDERS_WINDOW_DAYS = 30;
+export const INVOICES_WINDOW_DAYS = 60;
 
 // Trả về chuỗi ISO của mốc "N ngày trước" tính từ bây giờ.
 function daysAgoISO(days: number): string {
@@ -26,11 +28,11 @@ function daysAgoISO(days: number): string {
 
 // ---------- ORDERS panel ----------
 export function useOrdersData(fullHistory = false) {
-  const since = fullHistory ? undefined : daysAgoISO(DEFAULT_WINDOW_DAYS);
+  const since = fullHistory ? undefined : daysAgoISO(ORDERS_WINDOW_DAYS);
 
   return useQuery({
     // queryKey khác nhau giữa "90 ngày" và "tất cả" -> cache riêng, không đè nhau.
-    queryKey: ['orders-panel', fullHistory ? 'all' : '90d'],
+    queryKey: ['orders-panel', fullHistory ? 'all' : '30d'],
     queryFn: async () => {
       const supabase = createClient();
       const [orders, productsRes, reconRes] = await Promise.all([
@@ -55,10 +57,10 @@ export function useOrdersData(fullHistory = false) {
 
 // ---------- DASHBOARD panel ----------
 export function useDashboardData(fullHistory = false) {
-  const since = fullHistory ? undefined : daysAgoISO(DEFAULT_WINDOW_DAYS);
+  const since = fullHistory ? undefined : daysAgoISO(DASHBOARD_WINDOW_DAYS);
 
   return useQuery({
-    queryKey: ['dashboard-panel', fullHistory ? 'all' : '60d'],
+    queryKey: ['dashboard-panel', fullHistory ? 'all' : '30d'],
     queryFn: async () => {
       const supabase = createClient();
       const [orders, adsRes, productsRes, settingsRes] = await Promise.all([
@@ -84,10 +86,10 @@ export function useDashboardData(fullHistory = false) {
 
 // ---------- INVOICES panel ----------
 export function useInvoicesData(fullHistory = false) {
-  const since = fullHistory ? undefined : daysAgoISO(DEFAULT_WINDOW_DAYS);
+  const since = fullHistory ? undefined : daysAgoISO(INVOICES_WINDOW_DAYS);
 
   return useQuery({
-    queryKey: ['invoices-panel', fullHistory ? 'all' : '90d'],
+    queryKey: ['invoices-panel', fullHistory ? 'all' : '60d'],
     queryFn: async () => {
       const supabase = createClient();
 
