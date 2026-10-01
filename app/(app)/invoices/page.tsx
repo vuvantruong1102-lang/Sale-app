@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useInvoicesData, DEFAULT_WINDOW_DAYS } from '@/lib/queries';
+import { useInvoicesData, INVOICES_WINDOW_DAYS as WIN } from '@/lib/queries';
 import InvoicesClient from './InvoicesClient';
 
 export default function InvoicesPage() {
@@ -14,13 +14,13 @@ export default function InvoicesPage() {
         <span>
           {fullHistory
             ? 'Đang hiển thị: tất cả hóa đơn'
-            : `Đang hiển thị: hóa đơn trong ${DEFAULT_WINDOW_DAYS} ngày gần nhất`}
+            : `Đang hiển thị: hóa đơn trong ${WIN} ngày gần nhất`}
         </span>
         <button
           onClick={() => setFullHistory(v => !v)}
           className="px-2 py-1 rounded border bg-white hover:bg-gray-100"
         >
-          {fullHistory ? `Chỉ ${DEFAULT_WINDOW_DAYS} ngày gần nhất` : 'Xem tất cả'}
+          {fullHistory ? `Chỉ ${WIN} ngày gần nhất` : 'Xem tất cả'}
         </button>
         {isFetching && <span className="text-gray-400">đang tải…</span>}
       </div>
