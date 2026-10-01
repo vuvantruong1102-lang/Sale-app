@@ -17,6 +17,7 @@ import { fetchAll } from '@/lib/fetchAll';
 // Số ngày hiển thị mặc định cho từng panel. Đổi số ở đây nếu cần.
 export const ORDERS_WINDOW_DAYS = 30;
 export const INVOICES_WINDOW_DAYS = 60;
+export const RETURNS_WINDOW_DAYS = 40;
 
 // Trả về chuỗi ISO của mốc "N ngày trước" tính từ bây giờ.
 function daysAgoISO(days: number): string {
@@ -81,6 +82,37 @@ export function useInvoicesData(fullHistory = false) {
         misa: misa.data || [],
         invStatus: invStatus.data || [],
         external: extInv.data || [],
+      };
+    },
+  });
+}
+
+// ---------- RETURNS (Đơn hủy/Trả hàng) panel ----------
+export function useReturnsData(fullHistory = false) {
+  const since = fullHistory ? undefined : daysAgoISO(RETURNS_WINDOW_DAYS);
+
+  return useQuery({
+    queryKey: ['returns-panel', fullHistory ? 'all' : '40d'],
+    queryFn: async () => {
+      const supabase = createClient();
+      const [orders, returns, reconciliation, invStatus] = await Promise.all([
+        // Chỉ orders lọc theo ngày (bảng nặng nhất). Các bảng còn lại nhỏ,
+        // tải đủ để đối chiếu đúng với đơn.
+        fetchAll(supabase as any, 'orders', {
+          orderBy: 'date_order',
+          ascending: false,
+          sinceColumn: since ? 'date_order' : undefined,
+          sinceDate: since,
+        }),
+        fetchAll(supabase as any, 'returns', { orderBy: null }),
+        fetchAll(supabase as any, 'reconciliation', { orderBy: null }),
+        fetchAll(supabase as any, 'invoice_status', { orderBy: null }),
+      ]);
+      return {
+        orders: orders as any[],
+        returns: returns as any[],
+        reconciliation: reconciliation as any[],
+        invStatus: invStatus as any[],
       };
     },
   });
