@@ -4,17 +4,15 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import {
-  LayoutDashboard, Package, Receipt,
-  TrendingUp, Settings, LogOut, ShoppingBag, RotateCcw, FileText,
+  Package, Receipt,
+  Settings, LogOut, ShoppingBag, RotateCcw, FileText,
 } from 'lucide-react';
 
 const items = [
-  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/orders', label: 'Đơn hàng', icon: Package },
   { href: '/returns', label: 'Đơn hủy/Trả hàng', icon: RotateCcw },
   { href: '/invoices', label: 'Hóa đơn', icon: Receipt },
   { href: '/external-invoices', label: 'Hóa đơn ngoài', icon: FileText },
-  { href: '/profit', label: 'Lỗ lãi', icon: TrendingUp },
   { href: '/settings', label: 'Cài đặt', icon: Settings },
 ];
 
