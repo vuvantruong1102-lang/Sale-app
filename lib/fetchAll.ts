@@ -29,6 +29,10 @@ export async function fetchAll(
     ascending?: boolean;
     tieBreaker?: string;
     maxRows?: number;
+    // Chỉ lấy rows có sinceColumn >= sinceDate (lọc ngay tại database cho nhẹ).
+    // VD: sinceColumn='date_order', sinceDate='2026-07-01T00:00:00Z'
+    sinceColumn?: string;
+    sinceDate?: string;
   } = {}
 ): Promise<any[]> {
   const {
@@ -37,6 +41,8 @@ export async function fetchAll(
     ascending = false,
     tieBreaker,
     maxRows = 100000,
+    sinceColumn,
+    sinceDate,
   } = options;
 
   // Tie-breaker mặc định theo bảng (id là PK luôn unique)
@@ -48,6 +54,8 @@ export async function fetchAll(
   while (from < maxRows) {
     const to = Math.min(from + PAGE_SIZE - 1, maxRows - 1);
     let query = supabase.from(table).select(select);
+    // Lọc theo ngày ngay tại DB: chỉ kéo về rows mới hơn mốc sinceDate.
+    if (sinceColumn && sinceDate) query = query.gte(sinceColumn, sinceDate);
     if (orderBy) query = query.order(orderBy, { ascending });
     // Thêm tie-breaker để pagination ổn định
     if (finalTieBreaker && finalTieBreaker !== orderBy) {
