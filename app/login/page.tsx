@@ -29,7 +29,7 @@ export default function LoginPage() {
       // Vào thẳng dashboard. Không gọi router.refresh() ở đây để tránh
       // phải chờ server render lại trước khi chuyển trang — dashboard tự
       // tải dữ liệu phía client và hiện spinner trong lúc tải.
-      router.push('/dashboard');
+      router.push('/orders');
     } catch (err: any) {
       setError(err.message || 'Có lỗi xảy ra');
       setLoading(false);
