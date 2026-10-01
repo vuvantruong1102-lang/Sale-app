@@ -1,23 +1,29 @@
-import { createClient } from '@/lib/supabase/server';
-import { fetchAll } from '@/lib/fetchAll';
+'use client';
+
+import { useOrdersData } from '@/lib/queries';
 import OrdersClient from './OrdersClient';
 
-// Tránh Vercel cache trang này - luôn render mới
-export const dynamic = 'force-dynamic';
-export const revalidate = 0;
+export default function OrdersPage() {
+  const { data, isLoading, isError, error } = useOrdersData();
 
-export default async function OrdersPage() {
-  const supabase = createClient();
-  const [orders, productsRes, reconRes] = await Promise.all([
-    fetchAll(supabase as any, 'orders', { orderBy: 'date_order', ascending: false }),
-    supabase.from('products').select('sku,cost'),
-    fetchAll(supabase as any, 'reconciliation', { orderBy: null }),
-  ]);
+  if (isLoading) {
+    return (
+      <div className="p-6 text-sm text-gray-500">Đang tải dữ liệu đơn hàng…</div>
+    );
+  }
+  if (isError) {
+    return (
+      <div className="p-6 text-sm text-red-600">
+        Lỗi tải dữ liệu: {(error as Error)?.message || 'không rõ'}
+      </div>
+    );
+  }
+
   return (
     <OrdersClient
-      initialOrders={orders}
-      products={productsRes.data || []}
-      reconciliation={reconRes as any}
+      initialOrders={data!.orders}
+      products={data!.products}
+      reconciliation={data!.reconciliation as any}
     />
   );
 }
