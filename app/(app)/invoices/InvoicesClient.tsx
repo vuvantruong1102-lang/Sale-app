@@ -248,9 +248,14 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       const cqtStatusText = statusRec?.cqt_status ?? null;
 
       // Cờ tiện ích dùng cho các cảnh báo bên dưới
-      const daXuatHD = norm(exportStatusText).includes('đã xuất'); // cột L = "Đã xuất hóa đơn"
       const hdChuaPhatHanh = norm(releaseStatusText).includes('chưa phát hành'); // cột K = "Chưa phát hành"
       const hdDaCapMa = norm(releaseStatusText).includes('đã cấp mã') || norm(releaseStatusText).includes('đã phát hành'); // cột K
+      // Đã xuất HĐ: ưu tiên cột L file MISA ("Đã xuất hóa đơn"). Nhưng file MISA
+      // thường cập nhật trễ hơn file Hoa_don, nên cũng coi là ĐÃ XUẤT khi file
+      // Hoa_don đã có Số HĐ hợp lệ + TT phát hành "Đã cấp mã/Đã phát hành".
+      const hasValidInvoiceNo = !!(statusRec?.invoice_no && String(statusRec.invoice_no).trim());
+      const daXuatHD = norm(exportStatusText).includes('đã xuất') // cột L = "Đã xuất hóa đơn"
+        || (hasValidInvoiceNo && hdDaCapMa); // file Hoa_don đã có số HĐ + đã cấp mã
 
       // ============ TÍNH "TRẠNG THÁI XUẤT HĐ" (cột visible) ============
       // Cột này phản ánh TÌNH TRẠNG XUẤT HÓA ĐƠN (cột L file MISA), KHÔNG phải
@@ -258,12 +263,21 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       // dữ liệu MISA mới suy ra theo trạng thái giao hàng.
       let statusFinal: { text: string; color: string };
       if (exportStatusText) {
-        // Có cột L "Tình trạng xuất hóa đơn" từ file MISA → hiển thị nguyên văn
+        // Có cột L "Tình trạng xuất hóa đơn" từ file MISA → hiển thị nguyên văn.
+        // Ngoại lệ: nếu MISA ghi "Chưa xuất" nhưng file Hoa_don đã có số HĐ + đã cấp mã
+        // (MISA cập nhật trễ) → hiển thị "Đã xuất" cho đúng thực tế.
         const s = norm(exportStatusText);
-        const color = s.includes('đã xuất') ? 'green' : (s.includes('chưa xuất') ? 'red' : 'yellow');
-        statusFinal = { text: exportStatusText, color };
+        if (s.includes('chưa xuất') && hasValidInvoiceNo && hdDaCapMa) {
+          statusFinal = { text: 'Đã xuất', color: 'green' };
+        } else {
+          const color = s.includes('đã xuất') ? 'green' : (s.includes('chưa xuất') ? 'red' : 'yellow');
+          statusFinal = { text: exportStatusText, color };
+        }
       } else if (misaRec) {
         // Có bản ghi MISA nhưng cột L trống → coi như đã xuất
+        statusFinal = { text: 'Đã xuất', color: 'green' };
+      } else if (hasValidInvoiceNo && hdDaCapMa) {
+        // Không có dữ liệu MISA nhưng file Hoa_don đã có số HĐ + đã cấp mã → đã xuất
         statusFinal = { text: 'Đã xuất', color: 'green' };
       } else if (isCancelled) {
         statusFinal = { text: 'Đơn đã hủy', color: 'gray' };
