@@ -10,7 +10,7 @@ import { useResizableCols, ResizeHandle, ColDef } from '@/lib/useResizableCols';
 import { fetchAll } from '@/lib/fetchAll';
 import { ColHeader, ColFilter } from '@/components/ColHeader';
 import {
-  Upload, Download, ChevronLeft, ChevronRight, Search, RotateCcw, AlertTriangle,
+  Upload, Download, ChevronLeft, ChevronRight, Search, RotateCcw, AlertTriangle, Copy, Check,
 } from 'lucide-react';
 
 const PAGE_SIZE = 50;
@@ -380,6 +380,9 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         hasShipped,
         isCancelled,
         invoiceNo: statusRec?.invoice_no || '',
+        // Đơn "Đã giao" nhưng chưa xuất HĐ (dùng cho ô tổng hợp đầu trang)
+        notInvoiced: isDelivered && !daXuatHD,
+        notInvoicedReason: isNA ? 'Chưa có trên MISA' : 'Chưa xuất HĐ',
       });
     });
     return rows;
@@ -481,6 +484,28 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
 
     return list;
   }, [rowsWithCalc, dateRange, dateFrom, dateTo, search, filterMode, colFilters]);
+
+  // ===== Ô tổng hợp: đơn "Đã giao" nhưng chưa xuất HĐ =====
+  // Lấy trên toàn bộ dữ liệu (không phụ thuộc bộ lọc của bảng), đơn cũ nhất lên đầu
+  const notInvoicedRows = useMemo(() => {
+    return rowsWithCalc
+      .filter(r => r.notInvoiced)
+      .sort((a, b) => {
+        const ta = a.o.date_order ? new Date(a.o.date_order).getTime() : 0;
+        const tb = b.o.date_order ? new Date(b.o.date_order).getTime() : 0;
+        return ta - tb;
+      });
+  }, [rowsWithCalc]);
+
+  const [copiedNotInvoiced, setCopiedNotInvoiced] = useState(false);
+  const copyNotInvoicedIds = async () => {
+    const text = notInvoicedRows.map(r => r.o.order_id).join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedNotInvoiced(true);
+      setTimeout(() => setCopiedNotInvoiced(false), 1500);
+    } catch { /* ignore */ }
+  };
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageRows = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -958,6 +983,66 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
             onChange={e => { updateManualShip(e.target.value); setPage(1); }}
             onBlur={e => { if (saveTimer.current) clearTimeout(saveTimer.current); saveManualToDb(e.target.value); }}
           />
+        </div>
+
+        {/* Ô tổng hợp: đơn "Đã giao" nhưng chưa xuất HĐ */}
+        <div className="card text-left col-span-2 md:col-span-3">
+          <div className="text-xs text-gray-500 uppercase tracking-wider flex items-center justify-between gap-2">
+            <span className="flex items-center gap-1.5">
+              <AlertTriangle size={13} className={notInvoicedRows.length > 0 ? 'text-red-500' : 'text-gray-400'} />
+              Đã giao nhưng chưa xuất HĐ
+              <span className={`font-semibold normal-case ${notInvoicedRows.length > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                {notInvoicedRows.length} đơn
+              </span>
+            </span>
+            {notInvoicedRows.length > 0 && (
+              <button className="btn btn-secondary btn-sm normal-case" onClick={copyNotInvoicedIds}>
+                {copiedNotInvoiced ? <Check size={13} /> : <Copy size={13} />}
+                {copiedNotInvoiced ? 'Đã copy' : 'Copy mã đơn'}
+              </button>
+            )}
+          </div>
+
+          {notInvoicedRows.length === 0 ? (
+            <div className="mt-3 text-sm text-green-700">Tất cả đơn "Đã giao" đều đã xuất HĐ.</div>
+          ) : (
+            <div className="mt-2 max-h-48 overflow-y-auto border border-gray-100 rounded">
+              <table className="w-full text-xs">
+                <thead className="bg-gray-50 sticky top-0">
+                  <tr className="text-gray-500 text-left">
+                    <th className="px-2 py-1.5 font-medium">Sàn</th>
+                    <th className="px-2 py-1.5 font-medium">Mã đơn</th>
+                    <th className="px-2 py-1.5 font-medium">Ngày đặt</th>
+                    <th className="px-2 py-1.5 font-medium">Lý do</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {notInvoicedRows.map(r => (
+                    <tr key={r.o.unique_key} className="border-t border-gray-100 hover:bg-gray-50">
+                      <td className="px-2 py-1">
+                        <span className={`tag ${tagClass(r.o.platform)}`}>{r.o.platform === 'shopee' ? 'Shopee' : 'TikTok'}</span>
+                      </td>
+                      <td className="px-2 py-1 font-mono">
+                        <button
+                          className="hover:underline text-brand-600"
+                          title="Lọc bảng theo mã đơn này"
+                          onClick={() => { setSearch(r.o.order_id); setPage(1); }}
+                        >
+                          {r.o.order_id}
+                        </button>
+                      </td>
+                      <td className="px-2 py-1">{fmtDate(r.o.date_order)}</td>
+                      <td className="px-2 py-1">
+                        <span className={`tag ${r.notInvoicedReason === 'Chưa xuất HĐ' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                          {r.notInvoicedReason}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
 
