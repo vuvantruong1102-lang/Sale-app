@@ -298,15 +298,16 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
         warnings.push('Xuất HĐ theo thông tin KH');
       }
 
-      if (isNA) {
-        // Cả 2 cột N/A: bỏ qua đơn hủy và đơn còn "Chờ giao"; đơn khác nhắc kiểm tra MISA
-        if (!isCancelled && !isPendingShip) {
+      // Hai cảnh báo "Kiểm tra cập nhật MISA" và "Chưa xuất HĐ (đã gửi hàng)"
+      // CHỈ hiện khi đơn ở trạng thái "Đã giao"
+      const isDelivered = st.text === 'Đã giao';
+
+      if (isDelivered) {
+        if (isNA) {
+          // Cả 2 cột N/A → nhắc kiểm tra MISA
           warnings.push('Kiểm tra cập nhật MISA');
-        }
-      } else {
-        // Đơn đã gửi hàng nhưng chưa xuất HĐ — bỏ qua nếu đơn còn "Chờ giao" (chưa giao xong)
-        // Áp dụng cả khi có MISA nhưng MISA ghi "Chưa xuất hóa đơn" (chưa thực sự xuất HĐ)
-        if (hasShipped && !isPendingShip && !isCancelled && !daXuatHD) {
+        } else if (!daXuatHD) {
+          // Đã giao nhưng chưa xuất HĐ (kể cả khi MISA ghi "Chưa xuất hóa đơn")
           warnings.push('Chưa xuất HĐ (đã gửi hàng)');
         }
       }
