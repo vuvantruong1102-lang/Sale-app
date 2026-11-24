@@ -536,6 +536,7 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
 
         const c_orderId    = idx('Order ID');                       // A
         const c_status     = idx('Order Status');                   // B
+        const c_substatus  = idx('Order Substatus');                // C (vd "Đã giao" khi B = "Đã vận chuyển")
         const c_sku        = idx('Seller SKU');                     // G
         const c_skuId      = idx('SKU ID');                         // F
         const c_name       = idx('Product Name');                   // H
@@ -608,7 +609,20 @@ export default function OrdersClient({ initialOrders, products, reconciliation: 
             platform: 'tiktok' as any,
             package_id: c_packageId >= 0 ? String(r[c_packageId] ?? '') : '',
             tracking_no: c_tracking >= 0 ? String(r[c_tracking] ?? '') : '',
-            status: c_status >= 0 ? mapStatus(String(r[c_status] ?? '').trim()) : '',
+            status: (() => {
+              // Cột B "Order Status" chỉ là nhóm lớn: TikTok để "Đã vận chuyển" cho CẢ đơn đang giao
+              // lẫn đơn đã giao xong. Trạng thái thật nằm ở cột C "Order Substatus" ("Đang vận chuyển" / "Đã giao").
+              const main = c_status >= 0 ? String(r[c_status] ?? '').trim() : '';
+              const sub = c_substatus >= 0 ? String(r[c_substatus] ?? '').trim() : '';
+              const mMain = mapStatus(main);
+              // Hủy / Hoàn thành ở cột B luôn được ưu tiên
+              if (mMain === 'Đã hủy' || mMain === 'Hoàn thành') return mMain;
+              const mSub = sub ? mapStatus(sub) : '';
+              if (mSub === 'Đã hủy' || mSub === 'Hoàn thành' || mSub === 'Đã giao') return mSub;
+              // Dự phòng: có "Delivered Time" thì coi như đã giao
+              if (mMain === 'Đang giao' && c_dateDelivered >= 0 && r[c_dateDelivered]) return 'Đã giao';
+              return mMain;
+            })(),
             carrier: c_carrier >= 0 ? String(r[c_carrier] ?? '') : '',
             sku: skuVar,
             sku_parent: c_skuId >= 0 ? String(r[c_skuId] ?? '') : '',
