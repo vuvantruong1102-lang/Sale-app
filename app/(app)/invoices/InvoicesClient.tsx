@@ -299,8 +299,8 @@ export default function InvoicesClient({ initialOrders, initialMisa, initialInvS
       }
 
       // Hai cảnh báo "Kiểm tra cập nhật MISA" và "Chưa xuất HĐ (đã gửi hàng)"
-      // CHỈ hiện khi đơn ở trạng thái "Đã giao"
-      const isDelivered = st.text === 'Đã giao';
+      // CHỈ hiện khi đơn đã giao tới khách: "Đã giao", "Đã nhận" (người mua xác nhận), "Hoàn thành"
+      const isDelivered = ['Đã giao', 'Đã nhận', 'Hoàn thành'].includes(st.text);
 
       if (isDelivered) {
         if (isNA) {
